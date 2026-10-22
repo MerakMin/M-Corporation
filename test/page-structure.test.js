@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { browserOptions } from '../src/connectors.js';
-import { inspectPageStructure } from '../src/page-structure.js';
+import { inspectPageStructure, inspectInboxStructure } from '../src/page-structure.js';
 
 test('문의 구조 보고서는 고객 내용·속성값·입력값·URL을 내보내지 않고 폼을 변경하지 않는다', async () => {
   const browser = await chromium.launch(browserOptions());
@@ -39,5 +39,24 @@ test('구조가 큰 문서는 한도를 표시하고 출력 크기를 제한한�
     const report = await inspectPageStructure(page);
     assert.equal(report.frames[0].truncated, true);
     assert.equal(report.frames[0].nodes.length, 4000);
+  } finally { await browser.close(); }
+});
+
+test('로그인 후 메인 화면으로 이동한 페이지를 문의 목록으로 저장하지 않는다', async () => {
+  const browser = await chromium.launch(browserOptions());
+  try {
+    const page = await browser.newPage();
+    await page.route('https://seller.example/**', route => route.fulfill({ contentType: 'text/html', body: '<main>fixture</main>' }));
+    const inbox = 'https://seller.example/cs-center/cs-notification?status=1';
+    await page.goto('https://seller.example/dashboard');
+    await assert.rejects(() => inspectInboxStructure(page, inbox), /문의 목록 페이지가 아닙니다/);
+    await page.goto(inbox);
+    await page.setContent('<input type="password">');
+    await assert.rejects(() => inspectInboxStructure(page, inbox), /로그인 화면/);
+    await page.setContent('<main><table><thead><tr><th>문의번호</th></tr></thead><tbody></tbody></table></main>');
+    const report = await inspectInboxStructure(page, inbox);
+    assert.equal(report.locationChecked, true);
+    assert.ok(!JSON.stringify(report).includes('seller.example'));
+    assert.ok(report.frames[0].nodes.some(node => node.uiLabel === '문의번호'));
   } finally { await browser.close(); }
 });

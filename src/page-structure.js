@@ -61,3 +61,26 @@ export async function inspectPageStructure(page) {
   }
   return { frames };
 }
+
+export function matchesInboxLocation(actual, expected) {
+  try {
+    const current = new URL(actual), inbox = new URL(expected);
+    const path = url => url.pathname.replace(/\/$/, '') || '/';
+    return current.origin === inbox.origin && path(current) === path(inbox)
+      && current.hash.split('?')[0] === inbox.hash.split('?')[0];
+  } catch { return false; }
+}
+
+export async function inspectInboxStructure(page, expectedUrl) {
+  const check = async () => {
+    if (!matchesInboxLocation(page.url(), expectedUrl)) throw new Error('등록된 문의 목록 페이지가 아닙니다.');
+    const passwords = page.locator('input[type="password"]');
+    for (let index = 0; index < await passwords.count(); index++) {
+      if (await passwords.nth(index).isVisible()) throw new Error('로그인 화면에서는 문의 목록을 저장할 수 없습니다.');
+    }
+  };
+  await check();
+  const structure = await inspectPageStructure(page);
+  await check();
+  return { locationChecked: true, ...structure };
+}

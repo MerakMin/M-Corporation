@@ -5,7 +5,7 @@ import { resolve, join } from 'node:path';
 import { browserOptions, safeUrl } from '../src/connectors.js';
 import { readLoginChannel } from '../src/login-config.js';
 import { resolvedSourceUrl } from '../src/channel-presets.js';
-import { inspectPageStructure } from '../src/page-structure.js';
+import { inspectPageStructure, inspectInboxStructure, matchesInboxLocation } from '../src/page-structure.js';
 
 async function main() {
   const dataDir = resolve(process.env.CS_DATA_DIR || '.data');
@@ -19,7 +19,8 @@ async function main() {
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const page = await context.newPage();
-    await page.goto(safeUrl(resolvedSourceUrl(source)), { waitUntil: 'domcontentloaded' });
+    const inboxUrl = safeUrl(resolvedSourceUrl(source));
+    await page.goto(inboxUrl, { waitUntil: 'domcontentloaded' });
     await page.bringToFront();
     const currentPage = () => context.pages().filter(page => !page.isClosed()).at(-1);
     const capture = async () => {
@@ -28,13 +29,21 @@ async function main() {
       return inspectPageStructure(target);
     };
     await terminal.question('1. 브라우저에서 문의 목록이 보이면 이 창으로 돌아와 Enter를 누르세요.\n');
-    const list = await capture();
+    if (!matchesInboxLocation(page.url(), inboxUrl)) {
+      console.log('현재 화면은 등록된 문의 목록 주소가 아닙니다. 로그인 후 메인 화면으로 이동했을 수 있어 문의 주소를 다시 엽니다.');
+      await page.goto(inboxUrl, { waitUntil: 'domcontentloaded' });
+      await page.bringToFront();
+      await terminal.question('고객 문의 목록이 열렸는지 확인한 뒤 Enter를 누르세요. 계속 다른 화면으로 이동하면 종료하고 알려주세요.\n');
+    }
+    // The list must be captured from the exact tab opened for this source,
+    // not a stale tab or a newly opened dashboard from the persistent profile.
+    const list = await inspectInboxStructure(page, inboxUrl);
     const answer = await terminal.question('2. 브라우저에서 문의 한 건을 열어 본문과 답변 입력란을 표시한 뒤 Enter를 누르세요. 열 문의가 없으면 s를 입력하세요. 답변 등록 버튼은 누르지 마세요.\n');
     const detail = answer.trim().toLowerCase() === 's' ? null : await capture();
     const directory = resolve('diagnostics');
     await mkdir(directory, { recursive: true });
     const filename = join(directory, `fashionplus-structure-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
-    await writeFile(filename, JSON.stringify({ format: 1, channel: 'fashionplus', list, detail }, null, 2), { mode: 0o600 });
+    await writeFile(filename, JSON.stringify({ format: 2, channel: 'fashionplus', list, detail }, null, 2), { mode: 0o600 });
     console.log(`진단 파일 저장 완료: ${filename}`);
     console.log('이 JSON 파일만 채팅에 첨부하세요. .data 폴더는 보내지 마세요. 실제 수집 연동은 아직 완료되지 않았습니다.');
   } finally { terminal.close(); await context.close(); }
