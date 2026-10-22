@@ -35,6 +35,16 @@ export function openStore(dataDir) {
       continue;
     }
     const previous = JSON.parse(row.config);
+    // Correct the original preset label without replacing custom sources,
+    // selectors, filters, or names supplied by the user.
+    if (channel.id === 'fashionplus') {
+      const original = previous.sources.find(source => source.id === 'fashionplus-0'
+        && source.name === '고객 문의' && source.url === defaults.sources[0].url);
+      if (original) {
+        original.name = 'CS알리미';
+        db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
+      }
+    }
     if (previous.presetVersion >= 2) continue;
     const sources = previous.sources.map(source => {
       const preset = defaults.sources.find(s => s.id === source.id);

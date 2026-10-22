@@ -55,6 +55,32 @@ test('카페24·하이버 날짜는 한국 자정과 연도 경계에서 갱신�
   }
 });
 
+test('패션플러스 기본 이름을 CS알리미로 바로잡고 사용자 설정은 보존한다', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cs-fashionplus-label-'));
+  let store = openStore(dir);
+  try {
+    assert.equal(store.channel('fashionplus').config.sources[0].name, 'CS알리미');
+    const previous = store.channel('fashionplus').config;
+    previous.sources[0].name = '고객 문의';
+    previous.sources[0].selectors = { ready: '.user-selected' };
+    previous.replyShopName = '직접 설정한 상호';
+    store.db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), 'fashionplus');
+    store.close(); store = openStore(dir);
+    const expected = structuredClone(previous);
+    expected.sources[0].name = 'CS알리미';
+    assert.deepEqual(store.channel('fashionplus').config, expected);
+    for (const source of [
+      { ...previous.sources[0], name: '직접 정한 이름' },
+      { ...previous.sources[0], url: 'https://example.com/custom' },
+    ]) {
+      const config = { ...previous, sources: [source] };
+      store.db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(config), 'fashionplus');
+      store.close(); store = openStore(dir);
+      assert.deepEqual(store.channel('fashionplus').config, config);
+    }
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('기존 설정 이관 시 사용자 URL·선택자·답변을 보존하고 새 문의함은 비활성으로 추가한다', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cs-migration-'));
   let store = openStore(dir);

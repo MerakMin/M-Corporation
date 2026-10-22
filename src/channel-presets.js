@@ -7,7 +7,7 @@ const naverSources = () => [
 ];
 const presets = [
   { id: 'fashionplus', name: '패션플러스', mark: 'F', color: '#a74e8c', sources: [
-    { name: '고객 문의', url: 'https://seller.fashionplus.co.kr/cs-center/cs-notification?status=1' },
+    { name: 'CS알리미', url: 'https://seller.fashionplus.co.kr/cs-center/cs-notification?status=1' },
   ] },
   { id: 'coupang', name: '쿠팡', mark: 'C', color: '#da594b', sources: [
     { name: '고객센터 문의', url: 'https://wing.coupang.com/tenants/cs/csinquiry' },
