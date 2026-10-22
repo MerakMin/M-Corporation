@@ -1,0 +1,16 @@
+{
+  "name": "m-corporation-cs-desk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "검토 후 전송하는 쇼핑몰 통합 CS 데스크",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "test:ui": "node scripts/check-ui.js",
+    "login": "node scripts/login.js"
+  },
+  "dependencies": { "playwright": "1.61.1" }
+}
