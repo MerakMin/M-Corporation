@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 import { createInterface } from 'node:readline/promises';
 import { resolve, join } from 'node:path';
-import { openStore } from '../src/store.js';
+import { readLoginChannel } from '../src/login-config.js';
 import { browserOptions, safeUrl, verifyChannelAccount } from '../src/connectors.js';
 import { CHANNELS } from '../src/domain.js';
 import { resolvedSourceUrl } from '../src/channel-presets.js';
@@ -12,9 +12,7 @@ if (!CHANNELS.some(channel => channel.id === id)) {
   process.exit(1);
 }
 const dataDir = resolve(process.env.CS_DATA_DIR || '.data');
-const store = openStore(dataDir);
-const channel = store.channel(id);
-store.close();
+const channel = readLoginChannel(dataDir, id);
 const source = channel.config.sources.find(s => s.url);
 const url = source && resolvedSourceUrl(source);
 if (!url) { console.error('먼저 대시보드 채널 설정에서 문의 페이지 URL을 저장하세요.'); process.exit(1); }
@@ -33,4 +31,4 @@ try {
   if (channel.config.accountCheck?.selector) await verifyChannelAccount(page, channel);
   else if (channel.config.accountCheck) console.log('스토어명 자동 확인 설정이 아직 없습니다. 채널 설정에서 스토어명 선택자를 지정한 뒤 수집을 활성화하세요.');
 } finally { await context.close(); }
-console.log('브라우저 세션을 저장했습니다. 서버를 시작한 뒤 지금 수집을 실행하세요.');
+console.log('브라우저 세션을 저장했습니다. 로그인 성공과 문의 수집은 아직 확인하지 않았습니다. 서버를 시작하고 문의 화면 설정을 마친 뒤 지금 수집으로 확인하세요.');
