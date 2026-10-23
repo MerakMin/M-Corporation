@@ -9,7 +9,7 @@ import { createApp } from '../src/server.js';
 import { openStore } from '../src/store.js';
 import { browserOptions, safeUrl, validateConfig, createConnectors } from '../src/connectors.js';
 import { defaultChannelConfig } from '../src/channel-presets.js';
-import { FASHIONPLUS_QNA, collectFashionplusQna } from '../src/fashionplus-qna.js';
+import { FASHIONPLUS_QNA, collectFashionplusQna, readQnaList } from '../src/fashionplus-qna.js';
 
 process.env.CS_ALLOW_LOCAL_CONNECTORS = '1';
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)));
@@ -17,7 +17,7 @@ const fields = ['긴급', '문의번호', '문의유형', '실적브랜드', '�
 // Synthetic content only. The split tables, nested labels, pager and detail
 // table reflect the supplied structural report, with no customer data copied.
 function listHtml(rows, total, pages, next = true) {
-  return `<h1>고객문의 게시판</h1><div class="owner"><div>답변대기</div><div class="grid"><div><div><table><thead><tr>${fields.map(label => `<th><div>${label}</div><button></button></th>`).join('')}</tr></thead></table></div><div><table><tbody>${rows.map(({ id, status = '답변대기', brand = '비욘드마이셀프', href = `/detail?id=${id}` }) => `<tr>${['-', id, '상품', brand, '0', '999', `<p><a href="${href}"><span>테스트 배송 문의</span></a></p>`, '가상 고객', '사용하지 않는 값', '2026-10-23', status].map(v => `<td><div>${v}</div></td>`).join('')}</tr>`).join('')}</tbody></table></div></div></div><div class="pager"><div><ol><li><a href="javascript:void(0)"><span>1</span></a></li>${next && pages > 1 ? '<li><a href="?page=2"><span>2</span></a></li>' : ''}</ol></div><div><label><input value="1"></label><button>이동</button><p>of <strong>${pages}</strong> (${total} items)</p></div></div></div>`;
+  return `<h1>고객문의 게시판</h1><div class="owner"><div>답변대기</div><div class="grid"><div><div><table><thead><tr>${fields.map(label => `<th><div>${label}</div><button></button></th>`).join('')}</tr></thead></table></div><div><table><tbody>${rows.map(({ id, status = '답변대기', brand = '비욘드마이셀프', href = `/detail?id=${id}` }) => `<tr>${['-', id, '상품', brand, '0', '999', `<p><a href="${href}"><span>테스트 배송 문의</span></a></p>`, '가상 고객', '사용하지 않는 값', '2026-10-23', status].map(v => `<td><div>${v}</div></td>`).join('')}</tr>`).join('')}</tbody></table></div></div></div><div class="pager"><div><ol><li><a href="javascript:void(0)"><span>1</span></a></li>${next && pages > 1 ? '<li><a href="?page=2"><span>2</span></a></li>' : ''}</ol></div><div><label><input value="1"></label><button>이동</button><p>of <strong>${pages}</strong></p> <span>(${total} items)</span></div></div></div>`;
 }
 function detailHtml(id, { brand = '비욘드마이셀프', status = '미확인', body = '언제 배송되나요?\n두 번째 줄' } = {}) {
   const data = { '문의유형': '상품', '문의상태': status, '주문번호': '0', '고객명': '가상 고객', '문의번호': id, '상품명': '[1] 테스트 셔츠', '브랜드명': `[1] ${brand}`, '문의내용': body.replaceAll('\n', '<br>') };
@@ -34,6 +34,9 @@ async function fixture() {
     if (url.pathname === '/detail') {
       let id = url.searchParams.get('id');
       res.end(detailHtml(scenario === 'identity' ? '9999' : id, { brand: scenario === 'detail-brand' ? '다른 브랜드' : '비욘드마이셀프', status: scenario === 'race' ? '답변완료' : '미확인', ...(scenario === 'empty-body' ? { body: '' } : {}) })); return;
+    }
+    if (scenario === 'delayed-counter') {
+      res.end(listHtml([{ id: '1001' }], 1, 1).replace('class="pager"', 'class="pager" style="display:none"') + '<script>setTimeout(() => document.querySelector(".pager").style.display = "", 600)</script>'); return;
     }
     if (scenario === 'empty') { res.end(listHtml([], 0, 0)); return; }
     if (scenario === 'missing-rows') { res.end(listHtml([], 2, 1)); return; }
@@ -70,6 +73,7 @@ test('패션플러스 전용 수집: 상세 본문·상품, 완료 제외, 페�
     assert.equal(items[0].customer, '가상 고객');
     assert.equal(items[0].source, 'fashionplus-1');
     site.setScenario('pages'); assert.equal((await collect()).length, 2);
+    site.setScenario('delayed-counter'); assert.equal((await collect()).length, 1);
     site.setScenario('empty'); assert.deepEqual(await collect(), []);
     site.setScenario('race'); assert.deepEqual(await collect(), []);
     for (const [scenario, message] of [
@@ -145,4 +149,34 @@ test('Q&A 설정 검증 및 이관은 사용자 매핑을 보존하고 자동 �
       assert.deepEqual(store.channel('fashionplus').config, saved);
     }
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('건수 표시가 문단 밖에 분리되어도 읽고 표 안의 문구·숨은 표시·충돌은 구분한다', async () => {
+  const browser = await chromium.launch(browserOptions());
+  const page = await browser.newPage();
+  const base = listHtml([{ id: '1001' }], 1, 1);
+  try {
+    for (const html of [
+      '<p>of <strong>1</strong></p> (1 items)',
+      '<p>of <strong>1</strong></p><span>(1 items)</span>',
+      '<span>of <b>1</b></span><div>(1 items)</div>',
+      '<p> of&nbsp; <strong>1</strong>\n ( 1 item ) </p>',
+    ]) {
+      await page.setContent(base);
+      await page.locator('.pager > div').last().evaluate((el, html) => { el.innerHTML = html; }, html);
+      const snapshot = await page.evaluate(readQnaList);
+      assert.equal(snapshot.error, undefined, html);
+      assert.equal(snapshot.pages, 1); assert.equal(snapshot.total, 1);
+      assert.deepEqual(snapshot.rows.map(row => row.external_id), ['1001']);
+    }
+    await page.setContent(base);
+    await page.locator('.pager').evaluate(el => { el.insertAdjacentHTML('beforeend', '<div hidden>of 99 (999 items)</div>'); });
+    assert.equal((await page.evaluate(readQnaList)).total, 1);
+    await page.locator('.pager').evaluate(el => { el.insertAdjacentHTML('beforeend', '<p>of 2 (20 items)</p>'); });
+    assert.match((await page.evaluate(readQnaList)).error, /전체 건수/);
+    await page.setContent(base);
+    await page.locator('.pager p').evaluate(el => el.remove());
+    await page.locator('tbody tr td').nth(6).evaluate(el => { el.innerHTML = '<p>of 1 (1 items)</p>'; });
+    assert.match((await page.evaluate(readQnaList)).error, /전체 건수/);
+  } finally { await browser.close(); }
 });

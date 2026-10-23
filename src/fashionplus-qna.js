@@ -27,16 +27,29 @@ export function readQnaList(pageNumber = 1) {
   if (!tbody) return { error: '고객문의 목록 본문을 찾지 못했습니다.' };
   let root = table.parentElement;
   let counters = [];
-  const countPattern = /^of\s*([\d,]+)\s*\(\s*([\d,]+)\s*items?\s*\)$/i;
+  const countPattern = /\bof\s*(\d+(?:,\d{3})*)\s*\(\s*(\d+(?:,\d{3})*)\s*items?\s*\)/gi;
   while (root && root !== document.body) {
-    counters = [...root.querySelectorAll('p')].filter(el => visible(el) && countPattern.test(text(el)));
+    // Page count and item count can be separate text nodes/elements in the
+    // same pager. Read the containing region, outside data tables.
+    const matches = [...root.querySelectorAll('p, div, span')].filter(el =>
+      visible(el) && !el.closest('table') && !el.querySelector('table')
+    ).flatMap(el => {
+      const values = [...text(el).matchAll(countPattern)];
+      return values.length ? [{ el, values }] : [];
+    });
+    // Count each outside-table region once, including every display in it.
+    // This preserves conflicting counters when one is split across siblings.
+    const regions = matches.filter(candidate => !matches.some(other => candidate !== other && other.el.contains(candidate.el)));
+    counters = regions.flatMap(region => region.values.map(value => ({
+      pages: Number(value[1].replaceAll(',', '')),
+      total: Number(value[2].replaceAll(',', '')),
+    })));
     if (root.contains(tbody) && counters.length) break;
     root = root.parentElement;
   }
-  if (!root || root === document.body || counters.length !== 1) return { error: '고객문의 전체 건수와 페이지 수를 확인하지 못했습니다.' };
-  const [, pagesText, totalText] = text(counters[0]).match(countPattern);
-  const pages = Number(pagesText.replaceAll(',', ''));
-  const total = Number(totalText.replaceAll(',', ''));
+  if (!root || root === document.body || counters.length !== 1) return { error: '고객문의 전체 건수와 페이지 수를 확인하지 못했습니다.', retryable: counters.length === 0 };
+  const { pages, total } = counters[0];
+  if (!Number.isSafeInteger(pages) || !Number.isSafeInteger(total)) return { error: '고객문의 전체 건수와 페이지 수가 올바르지 않습니다.' };
   const rows = [];
   for (const tr of tbody.rows) {
     if (!visible(tr)) continue;
@@ -68,6 +81,17 @@ export function readQnaDetail() {
   return fields;
 }
 
+// The heading may render before the asynchronously loaded pager. Keep the
+// original error on timeout; never substitute the number of visible rows.
+async function waitForQnaList(page, number) {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const snapshot = await page.evaluate(readQnaList, number);
+    if (!snapshot.retryable || Date.now() >= deadline) return snapshot;
+    await page.waitForTimeout(200);
+  }
+}
+
 const pending = status => ['답변대기', '미확인'].includes(normalizeText(status));
 const complete = status => ['답변완료', '처리완료'].includes(normalizeText(status));
 const unnumber = value => value.replace(/^\[1\]\s*/, '').trim();
@@ -93,7 +117,7 @@ export async function collectFashionplusQna(context, channel, source, safeUrl) {
     await page.locator('thead th:visible').filter({ hasText: /^\s*문의번호\s*$/ }).waitFor();
     for (let number = 1; number <= (source.maxPages || 20); number++) {
       checkLocation(page, true);
-      const snapshot = await page.evaluate(readQnaList, number);
+      const snapshot = await waitForQnaList(page, number);
       if (snapshot.error) throw new AppError(snapshot.error);
       const { rows, total, pages } = snapshot;
       expectedTotal ??= total; expectedPages ??= pages;
