@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { CHANNELS, DEFAULT_TEMPLATES, classify, makeDraft } from './domain.js';
+import { AppError, CHANNELS, DEFAULT_TEMPLATES, classify, makeDraft } from './domain.js';
 import { defaultChannelConfig, LEGACY_CHANNELS } from './channel-presets.js';
 
 export function openStore(dataDir) {
@@ -22,6 +22,7 @@ export function openStore(dataDir) {
     CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, mode TEXT NOT NULL, name TEXT NOT NULL, sizes TEXT NOT NULL, UNIQUE(mode, name));
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT NOT NULL, inquiry_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
   `);
+  if (!db.prepare('PRAGMA table_info(inquiries)').all().some(column => column.name === 'detail_external_id')) db.exec("ALTER TABLE inquiries ADD COLUMN detail_external_id TEXT NOT NULL DEFAULT ''");
   const getSetting = key => { const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key); return row ? JSON.parse(row.value) : null; };
   const setSetting = (key, value) => db.prepare('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
   if (!getSetting('shop')) setSetting('shop', '비욘드마이셀프');
@@ -93,10 +94,16 @@ export function openStore(dataDir) {
   })];
   const event = (mode, inquiryId, action, detail) => db.prepare('INSERT INTO events (mode,inquiry_id,action,detail,created_at) VALUES (?,?,?,?,?)').run(mode, inquiryId, action, detail, new Date().toISOString());
   const addInquiry = (mode, data) => {
+    const previous = db.prepare('SELECT id,detail_external_id FROM inquiries WHERE mode=? AND channel=? AND source=? AND external_id=?').get(mode, data.channel, data.source, data.external_id);
+    if (data.detail_external_id && db.prepare('SELECT 1 FROM inquiries WHERE mode=? AND channel=? AND source=? AND detail_external_id=? AND external_id<>?').get(mode, data.channel, data.source, data.detail_external_id, data.external_id)) throw new AppError('다른 목록 번호에 이미 연결된 상세 문의번호입니다. 원문을 확인하세요.');
+    if (previous && data.detail_external_id) {
+      if (previous.detail_external_id && previous.detail_external_id !== data.detail_external_id) throw new AppError('저장된 목록 문의와 새로 열린 상세 문의번호의 연결이 달라졌습니다. 원문을 확인하세요.');
+      if (!previous.detail_external_id) db.prepare('UPDATE inquiries SET detail_external_id=?,version=version+1 WHERE id=?').run(data.detail_external_id, previous.id);
+    }
     const category = classify(`${data.title} ${data.body}`);
     const draft = makeDraft({ ...data, category }, getSetting('templates'), replyShop(data.channel), products(mode));
     const now = new Date().toISOString();
-    return db.prepare(`INSERT OR IGNORE INTO inquiries (id,mode,channel,source,external_id,customer,title,body,product,url,category,draft,created_at,collected_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), mode, data.channel, data.source, data.external_id, data.customer || '고객', data.title || '새 문의', data.body, data.product || '', data.url || '', category, draft, data.created_at || now, now).changes;
+    return db.prepare(`INSERT OR IGNORE INTO inquiries (id,mode,channel,source,external_id,customer,title,body,product,url,category,draft,created_at,collected_at,detail_external_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), mode, data.channel, data.source, data.external_id, data.customer || '고객', data.title || '새 문의', data.body, data.product || '', data.url || '', category, draft, data.created_at || now, now, data.detail_external_id || '').changes;
   };
   if (!getSetting('demo_seeded')) {
     db.prepare('INSERT INTO products VALUES (?,?,?,?)').run('demo-product-1', 'demo', '에센셜 오버핏 셔츠', JSON.stringify([

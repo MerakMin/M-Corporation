@@ -59,6 +59,7 @@ export function readQnaList(pageNumber = 1) {
     const cell = label => cells[labels.indexOf(label)];
     const links = [...cell('제목').querySelectorAll('a[href]')].filter(visible);
     if (links.length !== 1) return { error: '고객문의 상세 링크를 확인하지 못했습니다.' };
+    links[0].setAttribute('data-cs-qna-link', text(cell('문의번호')));
     rows.push({ external_id: text(cell('문의번호')), title: text(cell('제목')), customer: text(cell('고객명')), brand: text(cell('실적브랜드')), status: text(cell('처리상태')), href: links[0].href });
   }
   // Zero is accepted only with the explicit, scoped total counter.
@@ -92,6 +93,62 @@ async function waitForQnaList(page, number) {
   }
 }
 
+// Fashionplus uses separate list and detail IDs. The title click binds the
+// selected row to its popup; compare the visible parts of the masked name too.
+export function matchesCustomer(listName, detailName) {
+  const masked = normalizeText(listName);
+  const full = normalizeText(detailName);
+  if (!masked || !full) return false;
+  if (!masked.includes('*')) return masked === full;
+  if (masked.replaceAll('*', '').replaceAll(' ', '').length < 2) return false;
+  const expected = Array.from(masked);
+  const actual = Array.from(full);
+  return expected.length === actual.length && expected.every((char, index) => char === '*' || char === actual[index]);
+}
+
+// Use the site's title-click handler: its popup destination may differ from
+// the anchor's fallback href. Never manufacture a detail URL from a row ID.
+async function readClickedDetail(page, row, snapshot, number, safeUrl, origin) {
+  const link = page.locator(`[data-cs-qna-body] a[data-cs-qna-link="${row.external_id}"]`);
+  if (await link.count() !== 1 || await link.getAttribute('href') === null) throw new AppError('현재 목록에서 해당 문의 링크를 확인하지 못했습니다.');
+  const href = safeUrl(await link.evaluate(el => el.href));
+  if (new URL(href).origin !== origin || href !== safeUrl(row.href)) throw new AppError('문의 상세 링크가 다른 사이트를 가리키거나 수집 중 변경되었습니다.');
+  const popups = [];
+  const rememberPopup = popup => popups.push(popup);
+  page.on('popup', rememberPopup);
+  const beforeUrl = page.url();
+  let detail;
+  try {
+    await link.click();
+    const deadline = Date.now() + 12000;
+    while (!detail && Date.now() < deadline) {
+      if (popups.length > 1) throw new AppError('문의 클릭으로 여러 창이 열려 상세 화면을 확정하지 못했습니다.');
+      if (popups.length === 1) detail = popups[0];
+      else if (page.url() !== beforeUrl || await page.locator('th:visible').filter({ hasText: /^\s*문의내용\s*$/ }).count()) detail = page;
+      else await page.waitForTimeout(100);
+    }
+    if (!detail) throw new AppError('문의 제목을 눌렀지만 상세 화면이 열리지 않았습니다.');
+    await detail.waitForURL(url => ['http:', 'https:'].includes(url.protocol), { waitUntil: 'domcontentloaded', timeout: 12000 });
+    const url = safeUrl(detail.url());
+    if (new URL(url).origin !== origin) throw new AppError('문의 상세 화면이 다른 사이트로 이동했습니다. 로그인 상태를 확인하세요.');
+    await detail.locator('th:visible').filter({ hasText: /^\s*문의번호\s*$/ }).waitFor();
+    const fields = await detail.evaluate(readQnaDetail);
+    if (fields.error) throw new AppError(fields.error);
+    if (!/^\d{1,30}$/.test(fields['문의번호'])) throw new AppError('상세 화면의 문의번호 형식을 확인하지 못했습니다.');
+    if (!matchesCustomer(row.customer, fields['고객명'])) throw new AppError('클릭한 목록과 상세 화면의 고객명이 다릅니다. 이번 수집은 저장하지 않았습니다.');
+    if (detail === page) {
+      await page.goBack({ waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.locator('thead th:visible').filter({ hasText: /^\s*문의번호\s*$/ }).waitFor();
+      const restored = await waitForQnaList(page, number);
+      if (restored.error || restored.signature !== snapshot.signature || restored.total !== snapshot.total || restored.pages !== snapshot.pages) throw new AppError('상세 화면에서 돌아온 뒤 문의 목록이 달라졌습니다. 다시 수집해 주세요.');
+    }
+    return { fields, url };
+  } finally {
+    page.off('popup', rememberPopup);
+    await Promise.all(popups.map(popup => popup.close().catch(() => {})));
+  }
+}
+
 const pending = status => ['답변대기', '미확인'].includes(normalizeText(status));
 const complete = status => ['답변완료', '처리완료'].includes(normalizeText(status));
 const unnumber = value => value.replace(/^\[1\]\s*/, '').trim();
@@ -101,9 +158,9 @@ export async function collectFashionplusQna(context, channel, source, safeUrl) {
   const listUrl = safeUrl(source.url);
   const origin = new URL(listUrl).origin;
   const page = await context.newPage();
-  const detail = await context.newPage();
   const items = [];
   const seen = new Set();
+  const detailIds = new Set();
   const brand = normalizeText(source.expectedBrand);
   const checkLocation = (p, list = false) => {
     const url = new URL(p.url());
@@ -128,19 +185,15 @@ export async function collectFashionplusQna(context, channel, source, safeUrl) {
         if (normalizeText(row.brand) !== brand) throw new AppError('목록의 브랜드명이 설정과 다릅니다. 브랜드 필터와 연결 설정을 확인하세요.');
         if (complete(row.status)) continue;
         if (!pending(row.status)) throw new AppError('확인되지 않은 문의 처리상태입니다. 원문을 확인하세요.');
-        const url = safeUrl(row.href);
-        if (new URL(url).origin !== origin) throw new AppError('문의 상세 링크가 다른 사이트를 가리킵니다.');
-        await detail.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        checkLocation(detail);
-        await detail.locator('th:visible').filter({ hasText: /^\s*문의번호\s*$/ }).waitFor();
-        const fields = await detail.evaluate(readQnaDetail);
-        if (fields.error) throw new AppError(fields.error);
-        if (fields['문의번호'] !== row.external_id) throw new AppError('목록과 상세 화면의 문의번호가 다릅니다. 이번 수집은 저장하지 않았습니다.');
+        const { fields, url } = await readClickedDetail(page, row, snapshot, number, safeUrl, origin);
+        const detailId = fields['문의번호'];
+        if (detailIds.has(detailId)) throw new AppError('서로 다른 목록 항목이 같은 상세 문의번호로 연결되었습니다. 이번 수집은 저장하지 않았습니다.');
+        detailIds.add(detailId);
         if (normalizeText(unnumber(fields['브랜드명'])) !== brand) throw new AppError('상세 화면의 브랜드명이 설정과 다릅니다.');
         if (complete(fields['문의상태'])) continue;
         if (!pending(fields['문의상태'])) throw new AppError('상세 화면의 문의 처리상태를 확인하지 못했습니다.');
         if (!row.title || !fields['고객명'] || !fields['문의내용']) throw new AppError('문의 제목·고객명·본문 중 비어 있는 항목이 있습니다.');
-        items.push({ channel: channel.id, source: source.id, external_id: row.external_id, title: row.title, customer: fields['고객명'], body: fields['문의내용'], product: unnumber(fields['상품명']), url });
+        items.push({ channel: channel.id, source: source.id, external_id: row.external_id, detail_external_id: detailId, title: row.title, customer: fields['고객명'], body: fields['문의내용'], product: unnumber(fields['상품명']), url });
       }
       if (number >= pages) {
         if (seen.size !== total) throw new AppError('전체 건수와 읽은 문의 수가 다릅니다. 이번 수집은 저장하지 않았습니다.');
@@ -160,5 +213,5 @@ export async function collectFashionplusQna(context, channel, source, safeUrl) {
     const failure = new AppError('패션플러스 고객문의 화면을 읽지 못했습니다. 전용 브라우저의 로그인 상태와 고객문의 게시판을 확인하세요.');
     failure.cause = error;
     throw failure;
-  } finally { await page.close(); await detail.close(); }
+  } finally { await page.close(); }
 }

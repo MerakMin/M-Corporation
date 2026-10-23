@@ -72,11 +72,11 @@ try {
   await page.locator('[data-action="navigate"][data-page="inbox"]').first().click();
   await page.getByRole('heading', { name: '아직 문의가 없어요' }).waitFor();
   assert.equal(await page.locator('.demo-banner').count(), 0);
-  app.store.addInquiry('live', { channel: 'fashionplus', source: 'fashionplus-1', external_id: 'ui-qna', title: '전용 수집 테스트', body: '언제 배송되나요?', customer: '가상 고객', product: '테스트 셔츠', url: 'https://seller.fashionplus.co.kr/test-detail' });
+  app.store.addInquiry('live', { channel: 'fashionplus', source: 'fashionplus-1', external_id: 'ui-qna', detail_external_id: '2001', title: '전용 수집 테스트', body: '언제 배송되나요?', customer: '가상 고객', product: '테스트 셔츠', url: 'https://seller.fashionplus.co.kr/test-detail' });
   await page.reload();
   await page.getByRole('button', { name: '초안 복사', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: '검토 후 전송', exact: true }).count(), 0);
-  await page.getByText('문의번호 ui-qna', { exact: true }).waitFor();
+  await page.getByText('목록 번호 ui-qna · 상세 문의번호 2001', { exact: true }).waitFor();
   assert.equal(await page.getByRole('link', { name: '원문에서 답변', exact: true }).getAttribute('href'), 'https://seller.fashionplus.co.kr/test-detail');
   await page.getByRole('button', { name: '초안 복사', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '빈칸을 모두 채운 후 복사' }).waitFor();
