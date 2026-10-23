@@ -47,7 +47,14 @@ try {
   assert.equal(await page.locator('.source-links a').count(), 18);
   await page.locator('[data-action="configure-channel"][data-id="fashionplus"]').click();
   assert.equal(await page.locator('.source-config[data-source]').count(), 2);
-  await page.getByRole('button', { name: '취소', exact: true }).click();
+  assert.equal(await page.locator('[data-source="1"] .source-selectors').count(), 0);
+  assert.equal(await page.locator('.source-expected-brand').inputValue(), '비욘드마이셀프');
+  await page.locator('[data-source="0"] .source-enabled').uncheck();
+  await page.locator('#channel-enabled').check();
+  await page.getByRole('button', { name: '설정 저장', exact: true }).click();
+  await page.locator('#modal').waitFor({ state: 'hidden' });
+  assert.equal(app.store.channel('fashionplus').config.enabled, true);
+  assert.equal(app.store.channel('fashionplus').config.sources[0].enabled, false);
   await page.locator('[data-action="configure-channel"][data-id="smartstore_quarter"]').click();
   assert.equal(await page.locator('.source-config[data-source]').count(), 4);
   assert.equal(await page.locator('#account-expected').inputValue(), '쿼터');
@@ -65,6 +72,22 @@ try {
   await page.locator('[data-action="navigate"][data-page="inbox"]').first().click();
   await page.getByRole('heading', { name: '아직 문의가 없어요' }).waitFor();
   assert.equal(await page.locator('.demo-banner').count(), 0);
+  app.store.addInquiry('live', { channel: 'fashionplus', source: 'fashionplus-1', external_id: 'ui-qna', title: '전용 수집 테스트', body: '언제 배송되나요?', customer: '가상 고객', product: '테스트 셔츠', url: 'https://seller.fashionplus.co.kr/test-detail' });
+  await page.reload();
+  await page.getByRole('button', { name: '초안 복사', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '검토 후 전송', exact: true }).count(), 0);
+  await page.getByText('문의번호 ui-qna', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('link', { name: '원문에서 답변', exact: true }).getAttribute('href'), 'https://seller.fashionplus.co.kr/test-detail');
+  await page.getByRole('button', { name: '초안 복사', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '빈칸을 모두 채운 후 복사' }).waitFor();
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+  await page.getByRole('textbox', { name: '답변 초안', exact: true }).fill('확인 후 안내드리겠습니다.');
+  await page.getByRole('button', { name: '초안 복사', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '초안을 복사했어요' }).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '확인 후 안내드리겠습니다.');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '복사·원문 버튼이 모바일 폭에 맞아야 한다');
+  await page.setViewportSize({ width: 1440, height: 1050 });
   await page.locator('#mode-select').selectOption('demo');
   await page.getByRole('tab', { name: '전체 문의' }).click();
   await page.getByRole('textbox', { name: '문의 검색', exact: true }).fill('박지훈');
@@ -74,6 +97,6 @@ try {
   await page.screenshot({ path: 'test-results/mobile.png', fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '모바일에서 가로 스크롤이 없어야 한다');
   assert.deepEqual(errors, []);
-  console.log('UI checks passed: inbox, placeholder guard, reviewed send, templates, persistence, product form, nine profiles/eighteen inboxes, account settings, rolling dates, mode isolation, search, mobile layout.');
+  console.log('UI checks passed: inbox, placeholder guard, reviewed send, templates, persistence, product form, nine profiles/eighteen inboxes, account settings, rolling dates, Fashionplus setup without CSS, copy draft and send blocking, mode isolation, search, mobile layout.');
   console.log('Screenshots: test-results/desktop.png, test-results/mobile.png');
 } finally { await browser.close(); await app.close(); await rm(dataDir, { recursive: true, force: true }); }

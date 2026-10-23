@@ -7,6 +7,7 @@ import { openStore } from './store.js';
 import { createConnectors, validateConfig } from './connectors.js';
 import { AppError, CATEGORIES, CHANNELS, makeDraft, missingFields } from './domain.js';
 import { resolvedSourceUrl } from './channel-presets.js';
+import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED } from './fashionplus-qna.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INTERVAL = 10 * 60 * 1000;
@@ -29,7 +30,8 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
     timer = setTimeout(() => { sync().catch(() => {}); }, INTERVAL);
     timer.unref();
   };
-  const publicInquiry = row => ({ ...row, missing: missingFields(row.draft) });
+  const sendBlockedReason = row => row.mode === 'live' && store.channel(row.channel)?.config.sources.find(s => s.id === row.source)?.adapter === FASHIONPLUS_QNA ? QNA_SEND_BLOCKED : null;
+  const publicInquiry = row => ({ ...row, missing: missingFields(row.draft), sendBlockedReason: sendBlockedReason(row) });
   const getInquiry = (id, mode) => { const row = store.inquiry(id); if (!row || row.mode !== mode) throw new AppError('문의를 찾을 수 없습니다.', 404); return row; };
   const checkVersion = (row, version) => { if (row.version !== version) throw new AppError('다른 작업으로 문의가 변경되었습니다. 새로고침 후 다시 검토하세요.', 409); };
   const editable = row => { if (!['pending', 'failed'].includes(row.status)) throw new AppError('현재 상태에서는 답변을 수정하거나 전송할 수 없습니다.', 409); };
@@ -164,6 +166,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
         store.event(mode, row.id, 'draft_generated', `${category} 템플릿으로 초안을 다시 작성했습니다.`);
       } else if (method === 'POST' && action === 'send') {
         editable(row);
+        if (sendBlockedReason(row)) throw new AppError(sendBlockedReason(row), 409);
         if (body.approved !== true) throw new AppError('답변을 검토하고 전송을 확인해 주세요.');
         if (missingFields(row.draft).length) throw new AppError('답변의 빈칸을 모두 채운 후 전송하세요.');
         const channel = store.channel(row.channel);

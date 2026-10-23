@@ -8,7 +8,7 @@ const naverSources = () => [
 const presets = [
   { id: 'fashionplus', name: '패션플러스', mark: 'F', color: '#a74e8c', sources: [
     { name: 'CS알리미', url: 'https://seller.fashionplus.co.kr/cs-center/cs-notification?status=1' },
-    { name: '고객문의 게시판', url: 'https://seller.fashionplus.co.kr/cs-center/qna?status=1' },
+    { name: '고객문의 게시판', url: 'https://seller.fashionplus.co.kr/cs-center/qna?status=1', adapter: 'fashionplus-qna-readonly', expectedBrand: '비욘드마이셀프' },
   ] },
   { id: 'coupang', name: '쿠팡', mark: 'C', color: '#da594b', sources: [
     { name: '고객센터 문의', url: 'https://wing.coupang.com/tenants/cs/csinquiry' },
@@ -43,7 +43,7 @@ export const LEGACY_CHANNELS = [
 export function defaultChannelConfig(id) {
   const p = presets.find(p => p.id === id);
   return {
-    presetVersion: id === 'fashionplus' ? 3 : 2,
+    presetVersion: id === 'fashionplus' ? 4 : 2,
     enabled: false,
     replyShopName: p.replyShopName || '',
     ...(p.expectedAccount ? { accountCheck: { selector: '', expectedText: p.expectedAccount } } : {}),

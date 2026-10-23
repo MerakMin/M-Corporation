@@ -52,12 +52,29 @@ export function openStore(dataDir) {
         previous.presetVersion = 3;
         db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
       }
+      if (previous.presetVersion >= 2 && previous.presetVersion < 4) {
+        const preset = defaults.sources.find(source => source.id === 'fashionplus-1');
+        const qna = previous.sources.find(source => source.id === preset.id);
+        if (qna && qna.url === preset.url && !qna.adapter && !Object.values(qna.selectors || {}).some(value => value?.trim())) {
+          qna.adapter = preset.adapter;
+          qna.expectedBrand = preset.expectedBrand;
+          // Installing an adapter must not start a previously unmapped inbox.
+          qna.enabled = false;
+        }
+        previous.presetVersion = 4;
+        db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
+      }
     }
     if (previous.presetVersion >= 2) continue;
     const sources = previous.sources.map(source => {
       const preset = defaults.sources.find(s => s.id === source.id);
       if (!preset) return source;
       const merged = { ...preset, ...source };
+      if (preset.adapter && !source.adapter) {
+        if ((source.url && source.url !== preset.url) || Object.values(source.selectors || {}).some(value => value?.trim())) {
+          delete merged.adapter; delete merged.expectedBrand;
+        } else merged.enabled = false;
+      }
       if (!source.url) { merged.url = preset.url; merged.name = preset.name; }
       if (source.url && source.url !== preset.url && !Object.hasOwn(source, 'dateRange')) delete merged.dateRange;
       return merged;
