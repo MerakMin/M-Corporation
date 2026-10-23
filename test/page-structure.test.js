@@ -12,6 +12,7 @@ test('문의 구조 보고서는 고객 내용·속성값·입력값·URL을 내
       <table><thead><tr><th>문의번호</th><th>문의 내용</th></tr></thead><tbody>
       <tr data-row-key="secret-order"><td>secret-customer</td><td>secret-body</td></tr></tbody></table>
       <a href="https://example.com/secret-path?token=secret-token#secret-fragment">secret-link-text</a>
+      <table><tbody><tr><th><b>문의내용</b></th><td>secret-inquiry</td></tr></tbody></table>
       <form><label>답변</label><textarea name="secret-name">secret-draft</textarea>
       <input type="password" value="secret-password"><input type="hidden" value="secret-hidden">
       <button type="submit">등록</button></form><div role="secret-role">secret-text</div>
@@ -23,6 +24,7 @@ test('문의 구조 보고서는 고객 내용·속성값·입력값·URL을 내
     assert.ok(!json.includes('example.com'));
     const nodes = report.frames[0].nodes;
     assert.ok(nodes.some(node => node.uiLabel === '문의번호'));
+    assert.ok(nodes.some(node => node.tag === 'b' && node.uiLabel === '문의내용'));
     assert.ok(nodes.some(node => node.tag === 'tr' && node.attributes.includes('data-row-key')));
     assert.ok(nodes.some(node => node.inputType === 'password'));
     assert.ok(nodes.some(node => node.tag === 'a' && node.link.hasQuery));

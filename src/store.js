@@ -44,6 +44,14 @@ export function openStore(dataDir) {
         original.name = 'CS알리미';
         db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
       }
+      if (previous.presetVersion >= 2 && previous.presetVersion < 3) {
+        const qna = defaults.sources.find(source => source.id === 'fashionplus-1');
+        if (!previous.sources.some(source => source.id === qna.id)) {
+          previous.sources.push({ ...qna, enabled: false });
+        }
+        previous.presetVersion = 3;
+        db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
+      }
     }
     if (previous.presetVersion >= 2) continue;
     const sources = previous.sources.map(source => {

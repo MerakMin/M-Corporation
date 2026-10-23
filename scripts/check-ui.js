@@ -44,7 +44,10 @@ try {
   await page.getByRole('heading', { name: '새 상품', exact: true }).waitFor();
   await page.locator('[data-action="navigate"][data-page="channels"]').first().click();
   assert.equal(await page.locator('.channel-card').count(), 9);
-  assert.equal(await page.locator('.source-links a').count(), 17);
+  assert.equal(await page.locator('.source-links a').count(), 18);
+  await page.locator('[data-action="configure-channel"][data-id="fashionplus"]').click();
+  assert.equal(await page.locator('.source-config[data-source]').count(), 2);
+  await page.getByRole('button', { name: '취소', exact: true }).click();
   await page.locator('[data-action="configure-channel"][data-id="smartstore_quarter"]').click();
   assert.equal(await page.locator('.source-config[data-source]').count(), 4);
   assert.equal(await page.locator('#account-expected').inputValue(), '쿼터');
@@ -71,6 +74,6 @@ try {
   await page.screenshot({ path: 'test-results/mobile.png', fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '모바일에서 가로 스크롤이 없어야 한다');
   assert.deepEqual(errors, []);
-  console.log('UI checks passed: inbox, placeholder guard, reviewed send, templates, persistence, product form, nine profiles/seventeen inboxes, account settings, rolling dates, mode isolation, search, mobile layout.');
+  console.log('UI checks passed: inbox, placeholder guard, reviewed send, templates, persistence, product form, nine profiles/eighteen inboxes, account settings, rolling dates, mode isolation, search, mobile layout.');
   console.log('Screenshots: test-results/desktop.png, test-results/mobile.png');
 } finally { await browser.close(); await app.close(); await rm(dataDir, { recursive: true, force: true }); }

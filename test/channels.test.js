@@ -11,13 +11,13 @@ import { browserOptions, createConnectors, validateConfig } from '../src/connect
 
 process.env.CS_ALLOW_LOCAL_CONNECTORS = '1';
 
-test('요청한 17개 문의함을 9개 프로필로 등록하고 네이버 해시 경로를 보존한다', async () => {
+test('요청한 18개 문의함을 9개 프로필로 등록하고 네이버 해시 경로를 보존한다', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cs-channels-'));
   const store = openStore(dir);
   try {
     assert.equal(store.channelDefinitions().length, 9);
     const channels = CHANNELS.map(c => store.channel(c.id));
-    assert.equal(channels.flatMap(c => c.config.sources).length, 17);
+    assert.equal(channels.flatMap(c => c.config.sources).length, 18);
     assert.ok(channels.every(c => c.config.enabled === false));
     const beyond = store.channel('smartstore');
     const quarter = store.channel('smartstore_quarter');
@@ -78,6 +78,37 @@ test('패션플러스 기본 이름을 CS알리미로 바로잡고 사용자 설
       store.close(); store = openStore(dir);
       assert.deepEqual(store.channel('fashionplus').config, config);
     }
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('기존 패션플러스 설정에 고객문의 게시판을 비활성으로 한 번만 추가한다', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cs-fashionplus-qna-'));
+  let store = openStore(dir);
+  try {
+    const original = store.channel('fashionplus').config;
+    original.presetVersion = 2;
+    original.enabled = true;
+    original.sources = [original.sources[0]];
+    original.sources[0].selectors = { ready: '.existing' };
+    store.db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(original), 'fashionplus');
+    store.close(); store = openStore(dir);
+    const migrated = store.channel('fashionplus').config;
+    assert.equal(migrated.enabled, true);
+    assert.deepEqual(migrated.sources[0], original.sources[0]);
+    assert.equal(migrated.sources.length, 2);
+    assert.equal(migrated.sources[1].id, 'fashionplus-1');
+    assert.equal(migrated.sources[1].url, 'https://seller.fashionplus.co.kr/cs-center/qna?status=1');
+    assert.equal(migrated.sources[1].enabled, false);
+    assert.deepEqual(migrated.sources[1].selectors, {});
+    store.close(); store = openStore(dir);
+    assert.deepEqual(store.channel('fashionplus').config, migrated);
+    // A user-supplied source with the new ID is never overwritten during upgrade.
+    migrated.presetVersion = 2;
+    migrated.sources[1].url = 'https://example.com/user-qna';
+    migrated.sources[1].name = '내 문의함';
+    store.db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(migrated), 'fashionplus');
+    store.close(); store = openStore(dir);
+    assert.deepEqual(store.channel('fashionplus').config.sources, migrated.sources);
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

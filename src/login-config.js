@@ -15,3 +15,13 @@ export function readLoginChannel(dataDir, id) {
     return { id, config: row ? JSON.parse(row.config) : defaultChannelConfig(id) };
   } finally { db.close(); }
 }
+
+export function readLoginSource(dataDir, channelId, sourceId) {
+  const { config } = readLoginChannel(dataDir, channelId);
+  const saved = config.sources.find(source => source.id === sourceId);
+  if (saved) return saved;
+  // A login/diagnostic run must not migrate SQLite just to use a new preset.
+  const defaults = defaultChannelConfig(channelId);
+  if ((config.presetVersion || 0) < defaults.presetVersion) return defaults.sources.find(source => source.id === sourceId);
+  return undefined;
+}
