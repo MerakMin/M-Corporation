@@ -88,6 +88,21 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '복사·원문 버튼이 모바일 폭에 맞아야 한다');
   await page.setViewportSize({ width: 1440, height: 1050 });
+  const remoteRow = app.store.db.prepare("SELECT * FROM inquiries WHERE mode='live' AND external_id='ui-qna'").get();
+  app.store.recordRemoteStatus(remoteRow, '답변완료');
+  await page.reload();
+  await page.getByRole('tab', { name: '답변 완료 1', exact: true }).click();
+  await page.getByText('저장된 초안', { exact: true }).waitFor();
+  assert.equal(await page.getByText('전송한 답변', { exact: true }).count(), 0);
+  assert.match(await page.locator('.draft-caption').innerText(), /원문 답변완료 확인/);
+  assert.match(await page.locator('.draft-caption').innerText(), /실제 게시된 답변 본문은 수집하지 않았습니다/);
+  assert.equal(await page.locator('#draft-editor').inputValue(), '확인 후 안내드리겠습니다.');
+  assert.equal(await page.locator('#draft-editor').evaluate(el => el.readOnly), true);
+  assert.equal(await page.locator('#draft-warning').count(), 0);
+  assert.equal(await page.getByRole('button', { name: '초안 복사', exact: true }).count(), 0);
+  await page.locator('[data-action="navigate"][data-page="activity"]').first().click();
+  await page.getByText('원문 답변완료 확인', { exact: true }).waitFor();
+  await page.locator('[data-action="navigate"][data-page="inbox"]').first().click();
   await page.locator('#mode-select').selectOption('demo');
   await page.getByRole('tab', { name: '전체 문의' }).click();
   await page.getByRole('textbox', { name: '문의 검색', exact: true }).fill('박지훈');
@@ -97,6 +112,6 @@ try {
   await page.screenshot({ path: 'test-results/mobile.png', fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '모바일에서 가로 스크롤이 없어야 한다');
   assert.deepEqual(errors, []);
-  console.log('UI checks passed: inbox, placeholder guard, reviewed send, templates, persistence, product form, nine profiles/eighteen inboxes, account settings, rolling dates, Fashionplus setup without CSS, copy draft and send blocking, mode isolation, search, mobile layout.');
+  console.log('UI checks passed: inbox, placeholder guard, reviewed send, templates, persistence, product form, nine profiles/eighteen inboxes, account settings, rolling dates, Fashionplus setup without CSS, copy draft and send blocking, remote completion with preserved draft, mode isolation, search, mobile layout.');
   console.log('Screenshots: test-results/desktop.png, test-results/mobile.png');
 } finally { await browser.close(); await app.close(); await rm(dataDir, { recursive: true, force: true }); }

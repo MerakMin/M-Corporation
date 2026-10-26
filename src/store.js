@@ -23,6 +23,9 @@ export function openStore(dataDir) {
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT NOT NULL, inquiry_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
   `);
   if (!db.prepare('PRAGMA table_info(inquiries)').all().some(column => column.name === 'detail_external_id')) db.exec("ALTER TABLE inquiries ADD COLUMN detail_external_id TEXT NOT NULL DEFAULT ''");
+  for (const [name, type] of [['completion_origin', "TEXT NOT NULL DEFAULT ''"], ['remote_status_checked_at', 'TEXT']]) {
+    if (!db.prepare('PRAGMA table_info(inquiries)').all().some(column => column.name === name)) db.exec(`ALTER TABLE inquiries ADD COLUMN ${name} ${type}`);
+  }
   const getSetting = key => { const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key); return row ? JSON.parse(row.value) : null; };
   const setSetting = (key, value) => db.prepare('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
   if (!getSetting('shop')) setSetting('shop', '비욘드마이셀프');
@@ -93,6 +96,22 @@ export function openStore(dataDir) {
     return saved && (saved.config.enabled || saved.config.sources.some(s => s.url) || db.prepare("SELECT 1 FROM inquiries WHERE mode='live' AND channel=? LIMIT 1").get(def.id));
   })];
   const event = (mode, inquiryId, action, detail) => db.prepare('INSERT INTO events (mode,inquiry_id,action,detail,created_at) VALUES (?,?,?,?,?)').run(mode, inquiryId, action, detail, new Date().toISOString());
+  const recordRemoteStatus = (snapshot, remoteStatus) => {
+    if (!/^\d{1,30}$/.test(snapshot.detail_external_id || '')) throw new AppError('완료 확인에 필요한 상세 문의번호가 없습니다.');
+    if (!['답변완료', '답변대기', '미확인'].includes(remoteStatus)) throw new AppError('확인되지 않은 원문 상태입니다.');
+    const now = new Date().toISOString();
+    const where = "WHERE id=? AND mode='live' AND channel=? AND source=? AND detail_external_id=? AND url=? AND customer=? AND status IN ('pending','failed')";
+    const identity = [snapshot.id, snapshot.channel, snapshot.source, snapshot.detail_external_id, snapshot.url, snapshot.customer];
+    if (remoteStatus !== '답변완료') {
+      db.prepare(`UPDATE inquiries SET remote_status_checked_at=? ${where}`).run(now, ...identity);
+      return 0;
+    }
+    // Preserve the latest edited draft. The actual posted body/time were not
+    // collected, so neither may be filled from the draft or the check time.
+    const changed = db.prepare(`UPDATE inquiries SET status='sent',completion_origin='remote_status',remote_status_checked_at=?,sent_at=NULL,sent_body=NULL,error=NULL,version=version+1 ${where}`).run(now, ...identity).changes;
+    if (changed) event('live', snapshot.id, 'remote_completed', '패션플러스 원문의 답변완료 상태를 확인했습니다. 게시된 답변 본문·등록 시각은 수집하지 않았습니다.');
+    return changed;
+  };
   const addInquiry = (mode, data) => {
     const previous = db.prepare('SELECT id,detail_external_id FROM inquiries WHERE mode=? AND channel=? AND source=? AND external_id=?').get(mode, data.channel, data.source, data.external_id);
     if (data.detail_external_id && db.prepare('SELECT 1 FROM inquiries WHERE mode=? AND channel=? AND source=? AND detail_external_id=? AND external_id<>?').get(mode, data.channel, data.source, data.detail_external_id, data.external_id)) throw new AppError('다른 목록 번호에 이미 연결된 상세 문의번호입니다. 원문을 확인하세요.');
@@ -136,7 +155,7 @@ export function openStore(dataDir) {
     }
     setSetting('demo_channel_layout_v2', true);
   }
-  return { db, getSetting, setSetting, products, event, addInquiry, channel, channelDefinitions, replyShop,
+  return { db, getSetting, setSetting, products, event, addInquiry, recordRemoteStatus, channel, channelDefinitions, replyShop,
     inquiry: id => db.prepare('SELECT * FROM inquiries WHERE id=?').get(id),
     close: () => db.close(),
   };

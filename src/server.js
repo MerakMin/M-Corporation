@@ -52,25 +52,53 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
         const channel = store.channel(def.id);
         if (!channel.config.enabled) continue;
         db.prepare("UPDATE channels SET status='syncing', error=NULL WHERE id=?").run(def.id);
+        let added = 0;
+        let completed = 0;
+        const completionErrors = [];
+        // Check saved detail URLs first, independently of the pending list.
+        // A later list failure must not discard already verified completions.
+        const sources = new Set(channel.config.sources.filter(s => s.enabled !== false && s.adapter === FASHIONPLUS_QNA).map(s => s.id));
+        const targets = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND channel=? AND status IN ('pending','failed') ORDER BY collected_at").all(def.id).filter(row => sources.has(row.source));
+        if (targets.length) {
+          try {
+            if (!browser.checkCompletions) throw new AppError('완료 상태 확인 기능을 사용할 수 없습니다.');
+            const checks = await browser.checkCompletions(channel, targets);
+            const ids = new Set(targets.map(row => row.id));
+            if (!Array.isArray(checks) || checks.length !== targets.length || new Set(checks.map(result => result.id)).size !== targets.length || checks.some(result => !ids.has(result.id))) throw new AppError('완료 확인 결과와 대상 문의가 일치하지 않습니다.');
+            db.exec('BEGIN');
+            try {
+              for (const result of checks) {
+                const target = targets.find(row => row.id === result.id);
+                if (result.error) {
+                  completionErrors.push(result.error);
+                  store.event('live', target.id, 'remote_status_failed', result.error);
+                } else completed += store.recordRemoteStatus(target, result.status);
+              }
+              db.exec('COMMIT');
+            } catch (error) { db.exec('ROLLBACK'); completed = 0; throw error; }
+          } catch (error) {
+            completionErrors.push(error instanceof AppError ? error.message : '원문 완료 상태를 확인하지 못했습니다.');
+          }
+        }
         try {
           const items = await browser.collect(channel);
-          let added = 0;
           db.exec('BEGIN');
           try {
             for (const item of items) added += store.addInquiry('live', item);
-            db.prepare("UPDATE channels SET status='connected', last_sync=?, error=NULL WHERE id=?").run(new Date().toISOString(), def.id);
-            store.event('live', null, 'sync', `${def.name}: ${items.length}건 확인, ${added}건 추가`);
+            const message = completionErrors.length ? `완료 상태 확인 ${completionErrors.length}건 실패: ${completionErrors[0]}` : null;
+            db.prepare('UPDATE channels SET status=?, last_sync=?, error=? WHERE id=?').run(message ? 'error' : 'connected', new Date().toISOString(), message, def.id);
+            store.event('live', null, 'sync', `${def.name}: ${items.length}건 확인, ${added}건 추가, ${completed}건 완료 반영${message ? ` · ${message}` : ''}`);
             db.exec('COMMIT');
-          } catch (error) { db.exec('ROLLBACK'); throw error; }
-          results.push({ channel: def.id, added, ok: true });
+          } catch (error) { db.exec('ROLLBACK'); added = 0; throw error; }
+          results.push({ channel: def.id, added, completed, ok: completionErrors.length === 0, ...(completionErrors.length ? { error: completionErrors[0] } : {}) });
         } catch (error) {
           const message = error instanceof AppError ? error.message : '문의 화면을 읽지 못했습니다. 로그인·URL·선택자와 브라우저 설치 상태를 확인하세요.';
           db.prepare("UPDATE channels SET status='error', error=? WHERE id=?").run(message, def.id);
           store.event('live', null, 'sync_failed', `${def.name}: ${message}`);
-          results.push({ channel: def.id, ok: false, error: message });
+          results.push({ channel: def.id, added, completed, ok: false, error: message });
         }
       }
-      return { added: results.reduce((sum, r) => sum + (r.added || 0), 0), results };
+      return { added: results.reduce((sum, r) => sum + (r.added || 0), 0), completed: results.reduce((sum, r) => sum + (r.completed || 0), 0), results };
     } finally { syncing = false; resolveSync(); if (mode === 'live') armTimer(); }
   }
   armTimer();

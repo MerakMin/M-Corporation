@@ -1,7 +1,7 @@
 import { AppError, normalizeText } from './domain.js';
 
 export const FASHIONPLUS_QNA = 'fashionplus-qna-readonly';
-export const QNA_SEND_BLOCKED = '패션플러스 고객문의는 수집·초안 작성까지 지원합니다. 초안을 복사해 원문에서 답변을 등록하세요. 원문에서 등록한 답변의 완료 상태는 아직 자동 반영되지 않습니다.';
+export const QNA_SEND_BLOCKED = '패션플러스 고객문의는 수집·초안 작성과 완료 상태 확인을 지원합니다. 초안을 복사해 원문에서 답변을 등록하세요. 원문에서 등록한 답변의 완료 상태는 다음 수집 때 확인합니다.';
 
 export function validateQnaSource(source, channelId) {
   let url;
@@ -213,5 +213,34 @@ export async function collectFashionplusQna(context, channel, source, safeUrl) {
     const failure = new AppError('패션플러스 고객문의 화면을 읽지 못했습니다. 전용 브라우저의 로그인 상태와 고객문의 게시판을 확인하세요.');
     failure.cause = error;
     throw failure;
+  } finally { await page.close(); }
+}
+
+// Revisit a previously verified detail URL even after the inquiry disappears
+// from the pending list. Status verification never reads an editor as a reply.
+export async function checkFashionplusCompletion(context, channel, source, inquiry, safeUrl) {
+  validateQnaSource(source, channel.id);
+  if (inquiry.channel !== channel.id || inquiry.source !== source.id || !/^\d{1,30}$/.test(inquiry.detail_external_id || '')) throw new AppError('완료 확인에 필요한 상세 문의번호가 없습니다. 문의를 다시 수집해 주세요.');
+  const origin = new URL(safeUrl(source.url)).origin;
+  const url = safeUrl(inquiry.url);
+  if (new URL(url).origin !== origin) throw new AppError('저장된 문의 원문 주소가 패션플러스 문의함과 다릅니다.');
+  const page = await context.newPage();
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    if (new URL(page.url()).origin !== origin) throw new AppError('완료 상태 확인 중 다른 사이트로 이동했습니다. 전용 브라우저의 로그인을 확인하세요.');
+    await page.locator('th:visible').filter({ hasText: /^\s*문의번호\s*$/ }).waitFor();
+    const fields = await page.evaluate(readQnaDetail);
+    if (fields.error) throw new AppError(fields.error);
+    if (fields['문의번호'] !== inquiry.detail_external_id) throw new AppError('저장된 상세 문의번호와 원문 번호가 달라 완료 상태를 갱신하지 않았습니다.');
+    if (normalizeText(fields['고객명']) !== normalizeText(inquiry.customer)) throw new AppError('저장된 문의와 원문의 고객명이 달라 완료 상태를 갱신하지 않았습니다.');
+    if (normalizeText(unnumber(fields['브랜드명'])) !== normalizeText(source.expectedBrand)) throw new AppError('원문의 브랜드명이 설정과 달라 완료 상태를 갱신하지 않았습니다.');
+    const status = normalizeText(fields['문의상태']);
+    // "처리완료", disappearance, a greeting, or an empty list is not evidence
+    // that an answer was registered. Only the explicit answer-complete state is.
+    if (status !== '답변완료' && !pending(status)) throw new AppError('원문의 답변완료 여부를 확정할 수 없는 상태입니다.');
+    return status;
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError('원문 완료 상태를 읽지 못했습니다. 로그인과 상세 화면을 확인하세요.');
   } finally { await page.close(); }
 }

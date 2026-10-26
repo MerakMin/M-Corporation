@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { AppError, normalizeText } from './domain.js';
 import { CHANNELS, resolvedSourceUrl } from './channel-presets.js';
-import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED, collectFashionplusQna, validateQnaSource } from './fashionplus-qna.js';
+import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED, collectFashionplusQna, checkFashionplusCompletion, validateQnaSource } from './fashionplus-qna.js';
 
 export function browserOptions(headless = true) {
   const executablePath = process.env.CS_CHROMIUM_PATH || (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined);
@@ -104,6 +104,22 @@ export function createConnectors(dataDir) {
         }
         return products;
       } finally { await browser.close(); }
+    },
+    async checkCompletions(channel, inquiries) {
+      return withChannel(channel, async context => {
+        const results = [];
+        for (const inquiry of inquiries) {
+          try {
+            const source = channel.config.sources.find(s => s.id === inquiry.source && s.enabled !== false && s.adapter === FASHIONPLUS_QNA);
+            if (!channel.config.enabled || !source) throw new AppError('완료 확인 대상 문의함이 활성화되어 있지 않습니다.');
+            const status = await checkFashionplusCompletion(context, channel, source, inquiry, safeUrl);
+            results.push({ id: inquiry.id, status });
+          } catch (error) {
+            results.push({ id: inquiry.id, error: error instanceof AppError ? error.message : '완료 상태 확인에 실패했습니다.' });
+          }
+        }
+        return results;
+      });
     },
     async collect(channel) {
       return withChannel(channel, async context => {
