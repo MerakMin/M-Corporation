@@ -69,6 +69,16 @@ export function openStore(dataDir) {
         db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
       }
     }
+    if (channel.id === 'coupang' && previous.presetVersion >= 2 && previous.presetVersion < 3) {
+      const preset = defaults.sources.find(s => s.id === 'coupang-1');
+      const source = previous.sources.find(s => s.id === preset.id);
+      if (source && source.url === preset.url && !source.adapter && !Object.values(source.selectors || {}).some(value => value?.trim())) {
+        source.adapter = preset.adapter;
+        source.enabled = false;
+      }
+      previous.presetVersion = 3;
+      db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
+    }
     if (previous.presetVersion >= 2) continue;
     const sources = previous.sources.map(source => {
       const preset = defaults.sources.find(s => s.id === source.id);
@@ -124,6 +134,22 @@ export function openStore(dataDir) {
     const now = new Date().toISOString();
     return db.prepare(`INSERT OR IGNORE INTO inquiries (id,mode,channel,source,external_id,customer,title,body,product,url,category,draft,created_at,collected_at,detail_external_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), mode, data.channel, data.source, data.external_id, data.customer || '고객', data.title || '새 문의', data.body, data.product || '', data.url || '', category, draft, data.created_at || now, now, data.detail_external_id || '').changes;
   };
+  const recordCoupangReply = data => {
+    if (data.channel !== 'coupang' || !/^\d{1,30}$/.test(data.external_id) || !['pending', 'answered'].includes(data.remote_status)) throw new AppError('쿠팡 원문 확인 결과가 올바르지 않습니다.');
+    const row = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND channel=? AND source=? AND external_id=?").get(data.channel, data.source, data.external_id);
+    if (!row || ['body', 'product', 'customer', 'created_at'].some(key => row[key] !== data[key])) throw new AppError('저장된 쿠팡 접수번호의 문의 내용이 달라졌습니다. 원문을 확인하세요.');
+    if (data.remote_status === 'pending') return 0;
+    if (typeof data.remote_reply_body !== 'string' || !data.remote_reply_body.trim() || !Number.isFinite(Date.parse(data.remote_reply_at))) throw new AppError('쿠팡 게시된 답변 본문·등록 시각을 확인하지 못했습니다.');
+    if (!['pending', 'failed'].includes(row.status) && !(row.status === 'sent' && row.completion_origin === 'remote_reply')) return 0;
+    const now = new Date().toISOString();
+    if (row.status === 'sent' && row.sent_body === data.remote_reply_body && row.sent_at === data.remote_reply_at) {
+      db.prepare('UPDATE inquiries SET remote_status_checked_at=? WHERE id=?').run(now, row.id);
+      return 0;
+    }
+    db.prepare("UPDATE inquiries SET status='sent',completion_origin='remote_reply',sent_body=?,sent_at=?,remote_status_checked_at=?,error=NULL,version=version+1 WHERE id=?").run(data.remote_reply_body, data.remote_reply_at, now, row.id);
+    event('live', row.id, 'remote_reply', '쿠팡 원문의 최신 답변 본문과 등록 시각을 확인했습니다. 저장된 초안은 보존했습니다.');
+    return row.status === 'sent' ? 0 : 1;
+  };
   if (!getSetting('demo_seeded')) {
     db.prepare('INSERT INTO products VALUES (?,?,?,?)').run('demo-product-1', 'demo', '에센셜 오버핏 셔츠', JSON.stringify([
       { size: 'M', length: 74, shoulder: 52, chest: 59, waist: 58 },
@@ -155,7 +181,7 @@ export function openStore(dataDir) {
     }
     setSetting('demo_channel_layout_v2', true);
   }
-  return { db, getSetting, setSetting, products, event, addInquiry, recordRemoteStatus, channel, channelDefinitions, replyShop,
+  return { db, getSetting, setSetting, products, event, addInquiry, recordRemoteStatus, recordCoupangReply, channel, channelDefinitions, replyShop,
     inquiry: id => db.prepare('SELECT * FROM inquiries WHERE id=?').get(id),
     close: () => db.close(),
   };

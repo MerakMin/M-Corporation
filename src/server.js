@@ -8,6 +8,7 @@ import { createConnectors, validateConfig } from './connectors.js';
 import { AppError, CATEGORIES, CHANNELS, makeDraft, missingFields } from './domain.js';
 import { resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED } from './fashionplus-qna.js';
+import { COUPANG_PRODUCT, COUPANG_SEND_BLOCKED } from './coupang-product.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INTERVAL = 10 * 60 * 1000;
@@ -30,7 +31,11 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
     timer = setTimeout(() => { sync().catch(() => {}); }, INTERVAL);
     timer.unref();
   };
-  const sendBlockedReason = row => row.mode === 'live' && store.channel(row.channel)?.config.sources.find(s => s.id === row.source)?.adapter === FASHIONPLUS_QNA ? QNA_SEND_BLOCKED : null;
+  const sendBlockedReason = row => {
+    if (row.mode !== 'live') return null;
+    const adapter = store.channel(row.channel)?.config.sources.find(s => s.id === row.source)?.adapter;
+    return adapter === FASHIONPLUS_QNA ? QNA_SEND_BLOCKED : adapter === COUPANG_PRODUCT ? COUPANG_SEND_BLOCKED : null;
+  };
   const publicInquiry = row => ({ ...row, missing: missingFields(row.draft), sendBlockedReason: sendBlockedReason(row) });
   const getInquiry = (id, mode) => { const row = store.inquiry(id); if (!row || row.mode !== mode) throw new AppError('문의를 찾을 수 없습니다.', 404); return row; };
   const checkVersion = (row, version) => { if (row.version !== version) throw new AppError('다른 작업으로 문의가 변경되었습니다. 새로고침 후 다시 검토하세요.', 409); };
@@ -82,14 +87,18 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
         }
         try {
           const items = await browser.collect(channel);
+          const previousCompleted = completed;
           db.exec('BEGIN');
           try {
-            for (const item of items) added += store.addInquiry('live', item);
+            for (const item of items) {
+              added += store.addInquiry('live', item);
+              if (channel.id === 'coupang' && channel.config.sources.some(s => s.id === item.source && s.enabled !== false && s.adapter === COUPANG_PRODUCT)) completed += store.recordCoupangReply(item);
+            }
             const message = completionErrors.length ? `완료 상태 확인 ${completionErrors.length}건 실패: ${completionErrors[0]}` : null;
             db.prepare('UPDATE channels SET status=?, last_sync=?, error=? WHERE id=?').run(message ? 'error' : 'connected', new Date().toISOString(), message, def.id);
             store.event('live', null, 'sync', `${def.name}: ${items.length}건 확인, ${added}건 추가, ${completed}건 완료 반영${message ? ` · ${message}` : ''}`);
             db.exec('COMMIT');
-          } catch (error) { db.exec('ROLLBACK'); added = 0; throw error; }
+          } catch (error) { db.exec('ROLLBACK'); added = 0; completed = previousCompleted; throw error; }
           results.push({ channel: def.id, added, completed, ok: completionErrors.length === 0, ...(completionErrors.length ? { error: completionErrors[0] } : {}) });
         } catch (error) {
           const message = error instanceof AppError ? error.message : '문의 화면을 읽지 못했습니다. 로그인·URL·선택자와 브라우저 설치 상태를 확인하세요.';

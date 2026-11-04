@@ -12,7 +12,7 @@ const presets = [
   ] },
   { id: 'coupang', name: '쿠팡', mark: 'C', color: '#da594b', sources: [
     { name: '고객센터 문의', url: 'https://wing.coupang.com/tenants/cs/csinquiry' },
-    { name: '고객 문의', url: 'https://wing.coupang.com/tenants/cs/product/inquiries' },
+    { name: '고객 문의', url: 'https://wing.coupang.com/tenants/cs/product/inquiries', adapter: 'coupang-product-readonly' },
   ] },
   { id: 'cafe24', name: '카페24 자사몰', mark: '24', color: '#3563e9', sources: [
     { name: '미답변 상품 문의', url: 'https://beyondmyself.cafe24.com/admin/php/shop1/b/board_admin_bulletin_l.php?start_date=2026-09-21&end_date=2026-10-21&period=30&sel_board_no=6&sel_spam_view=not&search_channel=&list_limit=10&search=subject&search_key=&is_reply=N&is_comment=&real_filename=&mem_type=&report_status=&board_category=&no_member_article=F&navi_hide=&searchSort=', dateRange: { days: 30, startParam: 'start_date', endParam: 'end_date', periodParam: 'period' } },
@@ -43,7 +43,7 @@ export const LEGACY_CHANNELS = [
 export function defaultChannelConfig(id) {
   const p = presets.find(p => p.id === id);
   return {
-    presetVersion: id === 'fashionplus' ? 4 : 2,
+    presetVersion: id === 'fashionplus' ? 4 : id === 'coupang' ? 3 : 2,
     enabled: false,
     replyShopName: p.replyShopName || '',
     ...(p.expectedAccount ? { accountCheck: { selector: '', expectedText: p.expectedAccount } } : {}),
