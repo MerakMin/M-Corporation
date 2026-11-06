@@ -5,6 +5,7 @@ import { AppError, normalizeText } from './domain.js';
 import { CHANNELS, resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED, collectFashionplusQna, checkFashionplusCompletion, validateQnaSource } from './fashionplus-qna.js';
 import { COUPANG_PRODUCT, COUPANG_SEND_BLOCKED, collectCoupangProducts, validateCoupangProductSource } from './coupang-product.js';
+import { FASHIONPLUS_NOTIFICATIONS, NOTICE_SEND_BLOCKED, collectFashionplusNotifications, checkNotificationCompletion, validateNotificationSource } from './fashionplus-notifications.js';
 
 export function browserOptions(headless = true) {
   const executablePath = process.env.CS_CHROMIUM_PATH || (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined);
@@ -36,6 +37,7 @@ export function validateConfig(config, definition = {}) {
     for (const value of Object.values(source.selectors)) if (typeof value !== 'string' || value.length > 500) throw new AppError('선택자는 500자 이하 문자열이어야 합니다.');
     if (source.adapter) {
       if (source.adapter === FASHIONPLUS_QNA) validateQnaSource(source, definition.id);
+      else if (source.adapter === FASHIONPLUS_NOTIFICATIONS) validateNotificationSource(source, definition.id);
       else if (source.adapter === COUPANG_PRODUCT) validateCoupangProductSource(source, definition.id);
       else throw new AppError('지원하지 않는 전용 수집기입니다.');
     } else if (config.enabled && source.enabled !== false && (!source.url || !['ready', 'row', 'idAttribute', 'body', 'link', 'detailIdentity', 'detailIdAttribute', 'editor', 'submit', 'postedReply'].every(key => source.selectors[key]?.trim()))) throw new AppError('연동을 켜려면 수집할 문의함의 URL과 필수 선택자를 모두 입력하세요.');
@@ -112,8 +114,12 @@ export function createConnectors(dataDir) {
         const results = [];
         for (const inquiry of inquiries) {
           try {
-            const source = channel.config.sources.find(s => s.id === inquiry.source && s.enabled !== false && s.adapter === FASHIONPLUS_QNA);
+            const source = channel.config.sources.find(s => s.id === inquiry.source && s.enabled !== false && [FASHIONPLUS_QNA, FASHIONPLUS_NOTIFICATIONS].includes(s.adapter));
             if (!channel.config.enabled || !source) throw new AppError('완료 확인 대상 문의함이 활성화되어 있지 않습니다.');
+            if (source.adapter === FASHIONPLUS_NOTIFICATIONS) {
+              results.push({ id: inquiry.id, notification: await checkNotificationCompletion(context, channel, source, inquiry, safeUrl) });
+              continue;
+            }
             const status = await checkFashionplusCompletion(context, channel, source, inquiry, safeUrl);
             results.push({ id: inquiry.id, status });
           } catch (error) {
@@ -123,12 +129,27 @@ export function createConnectors(dataDir) {
         return results;
       });
     },
+    // Isolate each Fashionplus inbox: a failed notice page must not discard a
+    // successful customer-Q&A collection, or vice versa. Reuse the same saved
+    // profile sequentially, closing each context before opening the next.
+    async collectSources(channel) {
+      const results = [];
+      for (const source of channel.config.sources.filter(s => s.enabled !== false)) {
+        try { results.push({ source: source.id, items: await this.collect({ ...channel, config: { ...channel.config, sources: [source] } }) }); }
+        catch (error) { results.push({ source: source.id, error: `${source.name}: ${error instanceof AppError ? error.message : '문의 화면을 읽지 못했습니다.'}` }); }
+      }
+      return results;
+    },
     async collect(channel) {
       return withChannel(channel, async context => {
         const page = await context.newPage();
         const inquiries = [];
         for (const source of channel.config.sources) {
           if (source.enabled === false) continue;
+          if (source.adapter === FASHIONPLUS_NOTIFICATIONS) {
+            inquiries.push(...await collectFashionplusNotifications(context, channel, source, safeUrl));
+            continue;
+          }
           if (source.adapter === COUPANG_PRODUCT) {
             inquiries.push(...await collectCoupangProducts(context, channel, source, safeUrl));
             continue;
@@ -177,6 +198,7 @@ export function createConnectors(dataDir) {
       });
     },
     async send(channel, inquiry) {
+      if (inquiry.inquiry_kind === 'notification' || channel.config.sources.find(s => s.id === inquiry.source)?.adapter === FASHIONPLUS_NOTIFICATIONS) throw new AppError(NOTICE_SEND_BLOCKED, 409);
       if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === COUPANG_PRODUCT) throw new AppError(COUPANG_SEND_BLOCKED, 409);
       if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === FASHIONPLUS_QNA) throw new AppError(QNA_SEND_BLOCKED, 409);
       return withChannel(channel, async context => {

@@ -14,9 +14,11 @@ export function validateQnaSource(source, channelId) {
 // Browser-side readers use the labels and split header/body tables observed in
 // the supplied structure report. Never read phone fields, cookies, or form values.
 export function readQnaList(pageNumber = 1) {
+  const notification = typeof pageNumber === 'object' && pageNumber.kind === 'notification';
+  if (typeof pageNumber === 'object') pageNumber = pageNumber.pageNumber;
   const text = el => el?.innerText?.replace(/\s+/g, ' ').trim() || '';
   const visible = el => !!el?.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
-  const required = ['문의번호', '제목', '고객명', '실적브랜드', '처리상태'];
+  const required = notification ? ['문의번호', '주문번호', '고객명', '실적브랜드', '처리상태', '문의유형', '회신기한'] : ['문의번호', '제목', '고객명', '실적브랜드', '처리상태'];
   const candidates = [...document.querySelectorAll('thead tr')].filter(tr => visible(tr) && required.every(label => [...tr.cells].some(th => text(th.querySelector('div') || th) === label)));
   if (candidates.length !== 1) return { error: '고객문의 목록의 열 제목을 확인하지 못했습니다.' };
   const header = candidates[0];
@@ -57,10 +59,12 @@ export function readQnaList(pageNumber = 1) {
     if (cells.length === 1 && /^(조회된|검색된|등록된)?\s*(문의|데이터|내역|결과)가?\s*없습니다\.?$|^검색 결과가 없습니다\.?$/.test(text(tr))) continue;
     if (cells.length !== labels.length) return { error: '고객문의 목록의 행 구조가 변경되었습니다.' };
     const cell = label => cells[labels.indexOf(label)];
-    const links = [...cell('제목').querySelectorAll('a[href]')].filter(visible);
+    const links = [...cell(notification ? '처리상태' : '제목').querySelectorAll('a[href]')].filter(visible);
     if (links.length !== 1) return { error: '고객문의 상세 링크를 확인하지 못했습니다.' };
-    links[0].setAttribute('data-cs-qna-link', text(cell('문의번호')));
-    rows.push({ external_id: text(cell('문의번호')), title: text(cell('제목')), customer: text(cell('고객명')), brand: text(cell('실적브랜드')), status: text(cell('처리상태')), href: links[0].href });
+    const id = notification ? text(cell('문의번호')).replace(/^\[긴급\]\s*/, '') : text(cell('문의번호'));
+    links[0].setAttribute('data-cs-qna-link', id);
+    rows.push({ external_id: id, title: text(cell(notification ? '문의유형' : '제목')), customer: text(cell('고객명')), brand: text(cell('실적브랜드')), status: text(cell('처리상태')), href: links[0].href,
+      ...(notification ? { order_reference: text(cell('주문번호')), response_due: text(cell('회신기한')) } : {}) });
   }
   // Zero is accepted only with the explicit, scoped total counter.
   if ((!rows.length && total !== 0) || (rows.length && (!total || !pages))) return { error: '문의 목록과 전체 건수가 일치하지 않습니다.' };
@@ -84,7 +88,7 @@ export function readQnaDetail() {
 
 // The heading may render before the asynchronously loaded pager. Keep the
 // original error on timeout; never substitute the number of visible rows.
-async function waitForQnaList(page, number) {
+export async function waitForQnaList(page, number) {
   const deadline = Date.now() + 5000;
   for (;;) {
     const snapshot = await page.evaluate(readQnaList, number);

@@ -9,6 +9,7 @@ import { AppError, CATEGORIES, CHANNELS, makeDraft, missingFields } from './doma
 import { resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED } from './fashionplus-qna.js';
 import { COUPANG_PRODUCT, COUPANG_SEND_BLOCKED } from './coupang-product.js';
+import { FASHIONPLUS_NOTIFICATIONS, NOTICE_SEND_BLOCKED } from './fashionplus-notifications.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INTERVAL = 10 * 60 * 1000;
@@ -34,12 +35,13 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
   const sendBlockedReason = row => {
     if (row.mode !== 'live') return null;
     const adapter = store.channel(row.channel)?.config.sources.find(s => s.id === row.source)?.adapter;
+    if (row.inquiry_kind === 'notification' || adapter === FASHIONPLUS_NOTIFICATIONS) return NOTICE_SEND_BLOCKED;
     return adapter === FASHIONPLUS_QNA ? QNA_SEND_BLOCKED : adapter === COUPANG_PRODUCT ? COUPANG_SEND_BLOCKED : null;
   };
   const publicInquiry = row => ({ ...row, missing: missingFields(row.draft), sendBlockedReason: sendBlockedReason(row) });
   const getInquiry = (id, mode) => { const row = store.inquiry(id); if (!row || row.mode !== mode) throw new AppError('문의를 찾을 수 없습니다.', 404); return row; };
   const checkVersion = (row, version) => { if (row.version !== version) throw new AppError('다른 작업으로 문의가 변경되었습니다. 새로고침 후 다시 검토하세요.', 409); };
-  const editable = row => { if (!['pending', 'failed'].includes(row.status)) throw new AppError('현재 상태에서는 답변을 수정하거나 전송할 수 없습니다.', 409); };
+  const editable = row => { if (row.inquiry_kind === 'notification') throw new AppError(NOTICE_SEND_BLOCKED, 409); if (!['pending', 'failed'].includes(row.status)) throw new AppError('현재 상태에서는 답변을 수정하거나 전송할 수 없습니다.', 409); };
 
   async function sync(mode = 'live') {
     if (shuttingDown) throw new AppError('서버가 종료 중입니다.', 503);
@@ -62,7 +64,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
         const completionErrors = [];
         // Check saved detail URLs first, independently of the pending list.
         // A later list failure must not discard already verified completions.
-        const sources = new Set(channel.config.sources.filter(s => s.enabled !== false && s.adapter === FASHIONPLUS_QNA).map(s => s.id));
+        const sources = new Set(channel.config.sources.filter(s => s.enabled !== false && [FASHIONPLUS_QNA, FASHIONPLUS_NOTIFICATIONS].includes(s.adapter)).map(s => s.id));
         const targets = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND channel=? AND status IN ('pending','failed') ORDER BY collected_at").all(def.id).filter(row => sources.has(row.source));
         if (targets.length) {
           try {
@@ -77,7 +79,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
                 if (result.error) {
                   completionErrors.push(result.error);
                   store.event('live', target.id, 'remote_status_failed', result.error);
-                } else completed += store.recordRemoteStatus(target, result.status);
+                } else completed += target.inquiry_kind === 'notification' ? store.recordNotificationStatus(target, result.notification || {}) : store.recordRemoteStatus(target, result.status);
               }
               db.exec('COMMIT');
             } catch (error) { db.exec('ROLLBACK'); completed = 0; throw error; }
@@ -86,20 +88,31 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
           }
         }
         try {
-          const items = await browser.collect(channel);
-          const previousCompleted = completed;
-          db.exec('BEGIN');
-          try {
-            for (const item of items) {
-              added += store.addInquiry('live', item);
-              if (channel.id === 'coupang' && channel.config.sources.some(s => s.id === item.source && s.enabled !== false && s.adapter === COUPANG_PRODUCT)) completed += store.recordCoupangReply(item);
+          const batches = channel.id === 'fashionplus' && browser.collectSources ? await browser.collectSources(channel) : [{ items: await browser.collect(channel) }];
+          const errors = [...completionErrors];
+          let count = 0;
+          for (const batch of batches) {
+            if (batch.error) { errors.push(batch.error); continue; }
+            const beforeAdded = added, beforeCompleted = completed;
+            db.exec('BEGIN');
+            try {
+              for (const item of batch.items) {
+                const source = channel.config.sources.find(s => s.id === item.source && s.enabled !== false);
+                if (item.channel !== channel.id || !source || (batch.source && item.source !== batch.source)) throw new AppError('수집 결과의 문의함이 설정과 다릅니다.');
+                added += store.addInquiry('live', item);
+                if (source.adapter === FASHIONPLUS_NOTIFICATIONS) completed += store.recordNotificationStatus(item, item);
+                if (source.adapter === COUPANG_PRODUCT) completed += store.recordCoupangReply(item);
+              }
+              db.exec('COMMIT'); count += batch.items.length;
+            } catch (error) {
+              db.exec('ROLLBACK'); added = beforeAdded; completed = beforeCompleted;
+              errors.push(`${batch.source || def.name}: ${error instanceof AppError ? error.message : '수집 결과를 저장하지 못했습니다.'}`);
             }
-            const message = completionErrors.length ? `완료 상태 확인 ${completionErrors.length}건 실패: ${completionErrors[0]}` : null;
-            db.prepare('UPDATE channels SET status=?, last_sync=?, error=? WHERE id=?').run(message ? 'error' : 'connected', new Date().toISOString(), message, def.id);
-            store.event('live', null, 'sync', `${def.name}: ${items.length}건 확인, ${added}건 추가, ${completed}건 완료 반영${message ? ` · ${message}` : ''}`);
-            db.exec('COMMIT');
-          } catch (error) { db.exec('ROLLBACK'); added = 0; completed = previousCompleted; throw error; }
-          results.push({ channel: def.id, added, completed, ok: completionErrors.length === 0, ...(completionErrors.length ? { error: completionErrors[0] } : {}) });
+          }
+          const message = errors.length ? errors.join(' / ') : null;
+          db.prepare('UPDATE channels SET status=?, last_sync=?, error=? WHERE id=?').run(message ? 'error' : 'connected', new Date().toISOString(), message, def.id);
+          store.event('live', null, message ? 'sync_failed' : 'sync', `${def.name}: ${count}건 확인, ${added}건 추가, ${completed}건 완료 반영${message ? ` · ${message}` : ''}`);
+          results.push({ channel: def.id, added, completed, ok: !message, ...(message ? { error: message } : {}) });
         } catch (error) {
           const message = error instanceof AppError ? error.message : '문의 화면을 읽지 못했습니다. 로그인·URL·선택자와 브라우저 설치 상태를 확인하세요.';
           db.prepare("UPDATE channels SET status='error', error=? WHERE id=?").run(message, def.id);

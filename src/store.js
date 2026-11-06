@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AppError, CHANNELS, DEFAULT_TEMPLATES, classify, makeDraft } from './domain.js';
 import { defaultChannelConfig, LEGACY_CHANNELS } from './channel-presets.js';
+import { notificationState, NOTICE_SEND_BLOCKED } from './fashionplus-notifications.js';
 
 export function openStore(dataDir) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -25,6 +26,9 @@ export function openStore(dataDir) {
   if (!db.prepare('PRAGMA table_info(inquiries)').all().some(column => column.name === 'detail_external_id')) db.exec("ALTER TABLE inquiries ADD COLUMN detail_external_id TEXT NOT NULL DEFAULT ''");
   for (const [name, type] of [['completion_origin', "TEXT NOT NULL DEFAULT ''"], ['remote_status_checked_at', 'TEXT']]) {
     if (!db.prepare('PRAGMA table_info(inquiries)').all().some(column => column.name === name)) db.exec(`ALTER TABLE inquiries ADD COLUMN ${name} ${type}`);
+  }
+  for (const name of ['inquiry_kind', 'order_reference', 'remote_status', 'remote_closed', 'response_due']) {
+    if (!db.prepare('PRAGMA table_info(inquiries)').all().some(column => column.name === name)) db.exec(`ALTER TABLE inquiries ADD COLUMN ${name} TEXT NOT NULL DEFAULT '${name === 'inquiry_kind' ? 'customer' : ''}'`);
   }
   const getSetting = key => { const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key); return row ? JSON.parse(row.value) : null; };
   const setSetting = (key, value) => db.prepare('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
@@ -66,6 +70,15 @@ export function openStore(dataDir) {
           qna.enabled = false;
         }
         previous.presetVersion = 4;
+        db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
+      }
+      if (previous.presetVersion >= 2 && previous.presetVersion < 5) {
+        const preset = defaults.sources[0], source = previous.sources.find(s => s.id === preset.id);
+        if (source && source.url === preset.url && !source.adapter && !Object.values(source.selectors || {}).some(value => value?.trim())) {
+          source.adapter = preset.adapter; source.expectedBrand = preset.expectedBrand;
+          source.enabled = false;
+        }
+        previous.presetVersion = 5;
         db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
       }
     }
@@ -123,6 +136,13 @@ export function openStore(dataDir) {
     return changed;
   };
   const addInquiry = (mode, data) => {
+    if (data.inquiry_kind === 'notification') {
+      if (mode !== 'live' || data.channel !== 'fashionplus' || !/^\d{1,30}$/.test(data.external_id) || !data.order_reference || !data.body || !data.product || !data.customer) throw new AppError('CS알리미 식별 정보가 올바르지 않습니다.');
+      notificationState(data.remote_status, data.remote_closed);
+      const now = new Date().toISOString();
+      // No customer-facing draft is generated for an operational notice.
+      return db.prepare(`INSERT OR IGNORE INTO inquiries (id,mode,channel,source,external_id,customer,title,body,product,url,category,draft,created_at,collected_at,inquiry_kind,order_reference) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), mode, data.channel, data.source, data.external_id, data.customer, data.title || 'CS알리미', data.body, data.product, data.url, '기타', '', now, now, 'notification', data.order_reference).changes;
+    }
     const previous = db.prepare('SELECT id,detail_external_id FROM inquiries WHERE mode=? AND channel=? AND source=? AND external_id=?').get(mode, data.channel, data.source, data.external_id);
     if (data.detail_external_id && db.prepare('SELECT 1 FROM inquiries WHERE mode=? AND channel=? AND source=? AND detail_external_id=? AND external_id<>?').get(mode, data.channel, data.source, data.detail_external_id, data.external_id)) throw new AppError('다른 목록 번호에 이미 연결된 상세 문의번호입니다. 원문을 확인하세요.');
     if (previous && data.detail_external_id) {
@@ -133,6 +153,18 @@ export function openStore(dataDir) {
     const draft = makeDraft({ ...data, category }, getSetting('templates'), replyShop(data.channel), products(mode));
     const now = new Date().toISOString();
     return db.prepare(`INSERT OR IGNORE INTO inquiries (id,mode,channel,source,external_id,customer,title,body,product,url,category,draft,created_at,collected_at,detail_external_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), mode, data.channel, data.source, data.external_id, data.customer || '고객', data.title || '새 문의', data.body, data.product || '', data.url || '', category, draft, data.created_at || now, now, data.detail_external_id || '').changes;
+  };
+  const recordNotificationStatus = (snapshot, observed) => {
+    const status = notificationState(observed.remote_status, observed.remote_closed);
+    const row = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND channel=? AND source=? AND external_id=?").get(snapshot.channel, snapshot.source, snapshot.external_id);
+    if (!row || row.inquiry_kind !== 'notification' || ['body', 'product', 'customer', 'order_reference', 'url'].some(key => row[key] !== snapshot[key])) throw new AppError('저장된 CS알리미와 원문 식별 정보가 다릅니다.');
+    if (!['pending', 'failed', 'sent'].includes(row.status)) throw new AppError(NOTICE_SEND_BLOCKED);
+    const now = new Date().toISOString();
+    const changed = row.status !== status || row.remote_status !== observed.remote_status || row.remote_closed !== observed.remote_closed || row.response_due !== observed.response_due;
+    if (!changed) { db.prepare('UPDATE inquiries SET remote_status_checked_at=? WHERE id=?').run(now, row.id); return 0; }
+    db.prepare("UPDATE inquiries SET status=?,remote_status=?,remote_closed=?,response_due=?,completion_origin='remote_notice',remote_status_checked_at=?,error=NULL,version=version+1 WHERE id=?").run(status, observed.remote_status, observed.remote_closed, observed.response_due || '', now, row.id);
+    event('live', row.id, 'notification_status', `CS알리미 원문 상태 확인: ${observed.remote_status} · ${observed.remote_closed}. 주문 처리나 답변 등록을 실행한 것은 아닙니다.`);
+    return status === 'sent' && row.status !== 'sent' ? 1 : 0;
   };
   const recordCoupangReply = data => {
     if (data.channel !== 'coupang' || !/^\d{1,30}$/.test(data.external_id) || !['pending', 'answered'].includes(data.remote_status)) throw new AppError('쿠팡 원문 확인 결과가 올바르지 않습니다.');
@@ -181,7 +213,7 @@ export function openStore(dataDir) {
     }
     setSetting('demo_channel_layout_v2', true);
   }
-  return { db, getSetting, setSetting, products, event, addInquiry, recordRemoteStatus, recordCoupangReply, channel, channelDefinitions, replyShop,
+  return { db, getSetting, setSetting, products, event, addInquiry, recordRemoteStatus, recordCoupangReply, recordNotificationStatus, channel, channelDefinitions, replyShop,
     inquiry: id => db.prepare('SELECT * FROM inquiries WHERE id=?').get(id),
     close: () => db.close(),
   };
