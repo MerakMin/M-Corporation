@@ -1,4 +1,5 @@
 import { AppError, normalizeText } from './domain.js';
+import { saveFashionplusPaginationDiagnostic } from './fashionplus-diagnostics.js';
 
 export const FASHIONPLUS_QNA = 'fashionplus-qna-readonly';
 export const QNA_SEND_BLOCKED = '패션플러스 고객문의는 수집·초안 작성과 완료 상태 확인을 지원합니다. 초안을 복사해 원문에서 답변을 등록하세요. 원문에서 등록한 답변의 완료 상태는 다음 수집 때 확인합니다.';
@@ -27,6 +28,23 @@ export function readQnaList(pageNumber = 1) {
   const table = header.closest('table');
   const tbody = table.tBodies[0] || table.parentElement.nextElementSibling?.querySelector('table > tbody');
   if (!tbody) return { error: '고객문의 목록 본문을 찾지 못했습니다.' };
+  // Empty grids can omit their pager entirely. A zero result still requires
+  // an explicit empty message in THIS grid, never just an empty tbody or a
+  // zero in the page's unrelated status-summary counters.
+  let grid = table.parentElement;
+  while (grid && grid !== document.body && !grid.contains(tbody)) grid = grid.parentElement;
+  const emptyText = value => /^(?:no data(?: to display)?|no records(?: to display| found)?|no items to display)\.?$/i.test(value)
+    || /^(?:(?:조회된|검색된|등록된)\s*)?(?:데이터|자료|문의|내역|결과)(?:가|이)?\s*없습니다\.?$/.test(value)
+    || /^(?:조회|검색)\s*결과가?\s*없습니다\.?$/.test(value);
+  const visibleRows = [...tbody.rows].filter(visible);
+  const emptyRow = row => !!row && row.cells.length === 1 && emptyText(text(row));
+  const gridEmpty = grid && grid !== document.body && [...grid.querySelectorAll('div,span,p,td')].some(el =>
+    visible(el) && emptyText(text(el)) && !el.querySelector('table')
+    && (!el.closest('table') || (tbody.contains(el) && emptyRow(el.closest('tr'))))
+  );
+  const loading = [...document.querySelectorAll('[aria-busy="true"], .dx-loadpanel, .dx-loadindicator, .k-loading-mask, .jqx-grid-load')].some(visible);
+  const explicitEmpty = !!gridEmpty && visibleRows.every(emptyRow);
+  const paginationDiagnostics = { visibleRows: visibleRows.length, explicitEmpty, loading, scopedGrid: !!grid && grid !== document.body };
   let root = table.parentElement;
   let counters = [];
   const countPattern = /\bof\s*(\d+(?:,\d{3})*)\s*\(\s*(\d+(?:,\d{3})*)\s*items?\s*\)/gi;
@@ -49,14 +67,19 @@ export function readQnaList(pageNumber = 1) {
     if (root.contains(tbody) && counters.length) break;
     root = root.parentElement;
   }
-  if (!root || root === document.body || counters.length !== 1) return { error: '고객문의 전체 건수와 페이지 수를 확인하지 못했습니다.', retryable: counters.length === 0 };
+  paginationDiagnostics.counterCandidates = counters.length;
+  paginationDiagnostics.counters = counters.slice(0, 5);
+  if (explicitEmpty && loading) return { error: '빈 문의 목록이 아직 로딩 중입니다.', retryable: true, paginationDiagnostics };
+  if (explicitEmpty && counters.length === 0) return { rows: [], total: 0, pages: 0, hasNext: false, signature: '', idColumn: labels.indexOf('문의번호'), explicitEmpty: true, paginationDiagnostics };
+  if (!root || root === document.body || counters.length !== 1) return { error: '고객문의 전체 건수와 페이지 수를 확인하지 못했습니다.', retryable: counters.length === 0, paginationDiagnostics };
   const { pages, total } = counters[0];
+  if (explicitEmpty && total !== 0) return { error: '빈 목록 표시와 전체 문의 건수가 일치하지 않습니다.', retryable: true, paginationDiagnostics };
   if (!Number.isSafeInteger(pages) || !Number.isSafeInteger(total)) return { error: '고객문의 전체 건수와 페이지 수가 올바르지 않습니다.' };
   const rows = [];
   for (const tr of tbody.rows) {
     if (!visible(tr)) continue;
     const cells = [...tr.cells];
-    if (cells.length === 1 && /^(조회된|검색된|등록된)?\s*(문의|데이터|내역|결과)가?\s*없습니다\.?$|^검색 결과가 없습니다\.?$/.test(text(tr))) continue;
+    if (emptyRow(tr)) continue;
     if (cells.length !== labels.length) return { error: '고객문의 목록의 행 구조가 변경되었습니다.' };
     const cell = label => cells[labels.indexOf(label)];
     const links = [...cell(notification ? '처리상태' : '제목').querySelectorAll('a[href]')].filter(visible);
@@ -72,7 +95,7 @@ export function readQnaList(pageNumber = 1) {
   tbody.setAttribute('data-cs-qna-body', '');
   const next = [...root.querySelectorAll('ol a')].filter(el => visible(el) && text(el) === String(pageNumber + 1));
   if (next.length === 1) next[0].setAttribute('data-cs-qna-next', '');
-  return { rows, total, pages, hasNext: next.length === 1, signature: rows.map(row => row.external_id).join('|'), idColumn: labels.indexOf('문의번호') };
+  return { rows, total, pages, hasNext: next.length === 1, signature: rows.map(row => row.external_id).join('|'), idColumn: labels.indexOf('문의번호'), explicitEmpty, paginationDiagnostics };
 }
 
 export function readQnaDetail() {
@@ -91,8 +114,24 @@ export function readQnaDetail() {
 export async function waitForQnaList(page, number) {
   const deadline = Date.now() + 5000;
   for (;;) {
-    const snapshot = await page.evaluate(readQnaList, number);
-    if (!snapshot.retryable || Date.now() >= deadline) return snapshot;
+    let snapshot = await page.evaluate(readQnaList, number);
+    if (!snapshot.error && snapshot.total === 0) {
+      try {
+        await page.waitForLoadState('networkidle', { timeout: 5000 });
+        await page.waitForTimeout(350);
+        snapshot = await page.evaluate(readQnaList, number);
+        if (snapshot.paginationDiagnostics?.loading) snapshot = { ...snapshot, error: '빈 문의 목록의 로딩이 완료되지 않았습니다.', retryable: true };
+      } catch {
+        snapshot = { ...snapshot, error: '빈 문의 목록의 로딩 완료를 확인하지 못했습니다.', retryable: false };
+      }
+    }
+    if (!snapshot.retryable || Date.now() >= deadline) {
+      if (snapshot.error) {
+        const file = await saveFashionplusPaginationDiagnostic(page, number, snapshot);
+        if (file) snapshot.error += ` 진단 파일: ${file}`;
+      }
+      return snapshot;
+    }
     await page.waitForTimeout(200);
   }
 }
@@ -179,6 +218,7 @@ export async function collectFashionplusQna(context, channel, source, safeUrl) {
     for (let number = 1; number <= (source.maxPages || 20); number++) {
       checkLocation(page, true);
       const snapshot = await waitForQnaList(page, number);
+      checkLocation(page, true);
       if (snapshot.error) throw new AppError(snapshot.error);
       const { rows, total, pages } = snapshot;
       expectedTotal ??= total; expectedPages ??= pages;

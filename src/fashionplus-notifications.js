@@ -60,6 +60,7 @@ export async function collectFashionplusNotifications(context, channel, source, 
       listCheck();
       const input = { kind: 'notification', pageNumber: number };
       const snapshot = await waitForQnaList(page, input);
+      listCheck();
       if (snapshot.error) throw new AppError(snapshot.error.replaceAll('고객문의', 'CS알리미'));
       expectedTotal ??= snapshot.total; expectedPages ??= snapshot.pages;
       if (snapshot.total !== expectedTotal || snapshot.pages !== expectedPages) throw new AppError('CS알리미 수집 중 전체 건수가 변경되었습니다.');
