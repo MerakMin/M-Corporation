@@ -10,6 +10,8 @@ import { resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED } from './fashionplus-qna.js';
 import { COUPANG_PRODUCT, COUPANG_SEND_BLOCKED } from './coupang-product.js';
 import { FASHIONPLUS_NOTIFICATIONS, NOTICE_SEND_BLOCKED } from './fashionplus-notifications.js';
+import { collectionSummary } from './collectors/collection-report.js';
+
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INTERVAL = 10 * 60 * 1000;
@@ -122,8 +124,15 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
           results.push({ channel: def.id, added, completed, ok: false, error: message });
         }
       }
-      return { added: results.reduce((sum, r) => sum + (r.added || 0), 0), completed: results.reduce((sum, r) => sum + (r.completed || 0), 0), results };
-    } finally { syncing = false; resolveSync(); if (mode === 'live') armTimer(); }
+      
+
+return {
+  added: results.reduce((sum, r) => sum + (r.added || 0), 0),
+  completed: results.reduce((sum, r) => sum + (r.completed || 0), 0),
+  results,
+  summary: collectionSummary(results),
+};
+}finally { syncing = false; resolveSync(); if (mode === 'live') armTimer(); }
   }
   armTimer();
   async function route(method, path, query, body) {
