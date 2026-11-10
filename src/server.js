@@ -4,7 +4,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { openStore } from './store.js';
-import { createConnectors, validateConfig, safeUrl } from './connectors.js';
+import { createConnectors, validateConfig, safeUrl, automaticCollectionPlan } from './connectors.js';
 import { AppError, CATEGORIES, CHANNELS, makeDraft, missingFields } from './domain.js';
 import { resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED } from './fashionplus-qna.js';
@@ -44,7 +44,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
   const checkVersion = (row, version) => { if (row.version !== version) throw new AppError('다른 작업으로 문의가 변경되었습니다. 새로고침 후 다시 검토하세요.', 409); };
   const editable = row => { if (row.inquiry_kind === 'notification') throw new AppError(NOTICE_SEND_BLOCKED, 409); if (!['pending', 'failed'].includes(row.status)) throw new AppError('현재 상태에서는 답변을 수정하거나 전송할 수 없습니다.', 409); };
 
-  async function sync(mode = 'live') {
+  async function sync(mode = 'live', channelId = null) {
     if (shuttingDown) throw new AppError('서버가 종료 중입니다.', 503);
     if (syncing) throw new AppError('이미 수집 중입니다.', 409);
     syncing = true;
@@ -57,6 +57,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
         return { added: 0, results: [], demo: true };
       }
       for (const def of store.channelDefinitions()) {
+        if (channelId && def.id !== channelId) continue;
         const channel = store.channel(def.id);
         if (!channel.config.enabled) continue;
         db.prepare("UPDATE channels SET status='syncing', error=NULL WHERE id=?").run(def.id);
@@ -89,7 +90,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
           }
         }
         try {
-          const batches = channel.id === 'fashionplus' && browser.collectSources ? await browser.collectSources(channel) : [{ items: await browser.collect(channel) }];
+          const batches = browser.collectSources ? await browser.collectSources(channel) : [{ items: await browser.collect(channel) }];
           const errors = [...completionErrors];
           let count = 0;
           for (const batch of batches) {
@@ -134,13 +135,29 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
         inquiries: db.prepare('SELECT * FROM inquiries WHERE mode=? ORDER BY created_at DESC').all(mode).map(publicInquiry),
         channels: store.channelDefinitions().map(c => {
           const saved = store.channel(c.id);
-          return { ...c, ...saved, sources: saved.config.sources.map(s => s.name), resolvedSources: saved.config.sources.map(s => ({ id: s.id, url: resolvedSourceUrl(s) })) };
+          return { ...c, ...saved, automation: automaticCollectionPlan(saved, c), sources: saved.config.sources.map(s => s.name), resolvedSources: saved.config.sources.map(s => ({ id: s.id, url: resolvedSourceUrl(s) })) };
         }),
         products: store.products(mode), events: db.prepare('SELECT * FROM events WHERE mode=? ORDER BY id DESC LIMIT 100').all(mode),
         syncing, nextSync,
       };
     }
     if (method === 'POST' && path === '/api/sync') return sync(modeOf(body.mode));
+    const automaticMatch = path.match(/^\/api\/channels\/([\w-]+)\/automatic$/);
+    if (method === 'POST' && automaticMatch) {
+      if (modeOf(body.mode) !== 'live') throw new AppError('자동 수집은 실제 운영 모드에서 시작하세요.');
+      if (syncing) throw new AppError('이미 수집 중입니다. 완료 후 다시 시도하세요.', 409);
+      const id = automaticMatch[1], channel = store.channel(id);
+      const definition = store.channelDefinitions().find(c => c.id === id);
+      if (!channel || !definition) throw new AppError('알 수 없는 채널입니다.', 404);
+      const plan = automaticCollectionPlan(channel, definition);
+      const ready = new Set(plan.filter(s => s.ready).map(s => s.id));
+      if (!ready.size) throw new AppError('이 채널은 자동 수집 연동 준비 중입니다. 연결 설정을 확인하세요.', 409);
+      const config = { ...channel.config, enabled: true, sources: channel.config.sources.map(s => ({ ...s, enabled: ready.has(s.id) })) };
+      validateConfig(config, definition);
+      db.prepare("UPDATE channels SET config=?,status='configured',error=NULL WHERE id=?").run(JSON.stringify(config), id);
+      store.event('live', null, 'settings', `${definition.name}: 자동 수집 시작 · ${plan.filter(s => s.ready).map(s => s.name).join(', ')}${plan.some(s => !s.ready) ? ' · 연동 준비 중인 문의함 제외' : ''}`);
+      return { ...await sync('live', id), deferred: plan.filter(s => !s.ready) };
+    }
     if (method === 'POST' && path === '/api/inquiries/manual') {
       if (modeOf(body.mode) !== 'live') throw new AppError('직접 등록은 실제 운영 모드에서 사용하세요.');
       if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(body.requestId || '')) throw new AppError('등록 요청 ID를 확인하세요.');
@@ -311,6 +328,11 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
       res.writeHead(error.status || 500, { ...headers, 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: error instanceof AppError ? error.message : '서버 오류가 발생했습니다. 서버 로그를 확인하세요.' }));
     }
+  });
+  server.once('listening', () => {
+    if (!scheduler || shuttingDown) return;
+    clearTimeout(timer);
+    sync('live').catch(error => console.error('Startup collection failed:', error.message));
   });
   return { server, store, sync, async close() { shuttingDown = true; clearTimeout(timer); await new Promise(resolve => server.listening ? server.close(resolve) : resolve()); await syncFinished; store.close(); } };
 }

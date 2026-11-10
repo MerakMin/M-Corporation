@@ -57,6 +57,19 @@ export async function verifyChannelAccount(page, channel) {
   const actual = normalizeText(await page.locator(check.selector).innerText());
   if (actual !== normalizeText(check.expectedText)) throw new AppError('로그인한 스토어명이 이 채널의 설정과 다릅니다. 계정을 확인하세요.');
 }
+// Readiness is configuration only, not evidence of login or a successful read.
+export function automaticCollectionPlan(channel, definition = {}) {
+  return channel.config.sources.map(source => {
+    try {
+      if (!source.url) throw new AppError('문의함 주소가 필요합니다.');
+      if (!source.adapter && !source.selectors?.ready) throw new AppError('자동 수집 연동 준비 중');
+      validateConfig({ ...structuredClone(channel.config), enabled: true, sources: [{ ...structuredClone(source), enabled: true }] }, definition);
+      return { id: source.id, name: source.name, ready: true };
+    } catch (error) {
+      return { id: source.id, name: source.name, ready: false, reason: error instanceof AppError ? error.message : '문의함 설정 확인 필요' };
+    }
+  });
+}
 export function createConnectors(dataDir) {
   const busy = new Set();
   async function withChannel(channel, fn) {
@@ -129,8 +142,8 @@ export function createConnectors(dataDir) {
         return results;
       });
     },
-    // Isolate each Fashionplus inbox: a failed notice page must not discard a
-    // successful customer-Q&A collection, or vice versa. Reuse the same saved
+    // Isolate every inbox: a failure must not discard successful collections
+    // from other inboxes in the same channel. Reuse the same saved
     // profile sequentially, closing each context before opening the next.
     async collectSources(channel) {
       const results = [];

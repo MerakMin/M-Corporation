@@ -16,6 +16,8 @@ page.on('pageerror', error => errors.push(error.message));
 try {
   await page.goto(`http://127.0.0.1:${app.server.address().port}`);
   await page.locator('#mode-select').selectOption('live');
+  await page.getByRole('button', { name: '채널 연결', exact: true }).click();
+  await page.locator('.channel-card').filter({ has: page.getByRole('heading', { name: '쿠팡', exact: true }) }).locator('summary').click();
   await page.getByRole('button', { name: '문의 직접 등록', exact: true }).click();
   assert.equal(await page.locator('#manual-inbox option').count(), 17);
   await page.locator('#manual-inbox').selectOption('coupang/coupang-0');
@@ -35,8 +37,8 @@ try {
   await page.getByRole('button', { name: '원문 처리 완료 표시', exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-  await page.locator('[data-action="navigate"][data-page="channels"]').click();
-  assert.equal(await page.getByRole('button', { name: '문의 직접 등록', exact: true }).count(), 9);
+  await page.getByRole('button', { name: '채널 연결', exact: true }).click();
+  assert.equal(await page.locator('[data-action="manual-add"]').count(), 9);
   assert.deepEqual(errors, []);
   console.log('Manual workflow UI passed: 17 inboxes, registration, draft editing, completion/reopen, nine channel entries, mobile layout.');
 } finally { await browser.close(); await app.close(); await rm(dir, { recursive: true, force: true }); }
