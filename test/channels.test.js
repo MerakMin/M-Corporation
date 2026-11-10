@@ -144,7 +144,7 @@ test('동일 URL에서 두 네이버 프로필의 쿠키가 분리되고 잘못�
   const fixture = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    if (url.pathname === '/login') { res.setHeader('Set-Cookie', `store=${url.searchParams.get('account')}; Path=/; HttpOnly; SameSite=Lax`); res.end('Test account set'); return; }
+    if (url.pathname === '/login') { res.setHeader('Set-Cookie', `store=${url.searchParams.get('account')}; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax`); res.end('Test account set'); return; }
     if (req.method === 'POST') posts++;
     const account = req.headers.cookie?.includes('store=quarter') ? '쿼터' : '비욘드마이셀프';
     res.end(`<span id="account">${account}</span><main class="list" data-id="same"><article data-id="same"><p class="body">배송 문의합니다</p><a href="/detail">상세</a></article></main><textarea></textarea><button>전송</button>`);
