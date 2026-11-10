@@ -105,13 +105,49 @@ function detail(row) {
     ${row.status === 'uncertain' ? `<div class="resolve-actions"><p>원문에서 실제 게시 여부를 확인한 다음 선택하세요.</p><button class="button" data-action="resolve" data-outcome="sent">게시된 답변 확인</button><button class="button" data-action="resolve" data-outcome="pending">미게시 확인 · 대기로</button></div>` : ''}
     </div><div class="detail-footer"><span id="draft-save-status">${icon('check')}${locked ? '처리 기록 저장됨' : '초안 저장됨'}</span>${row.inquiry_kind === 'manual' && locked ? '<button class="button" data-action="manual-state" data-outcome="pending">대기로 되돌리기</button>' : ''}${!locked ? `<div>${row.inquiry_kind === 'manual' ? '<button class="button" data-action="manual-state" data-outcome="sent">원문 처리 완료 표시</button>' : ''}<button class="button" data-action="save-draft" ${state.busy ? 'disabled' : ''}>초안 저장</button>${row.sendBlockedReason ? `<button class="button primary" data-action="copy-draft" ${state.busy ? 'disabled' : ''}>초안 복사</button><a class="button" href="${escape(row.url)}" target="_blank" rel="noopener noreferrer">원문에서 답변</a>` : `<button class="button primary" data-action="review-send" ${state.busy ? 'disabled' : ''}>${icon('send')}${state.mode === 'demo' ? '예시 전송' : '검토 후 전송'}</button>`}</div>` : ''}</div>`;
 }
+
+function channelCollectionStatus(channel) {
+  if (state.mode === 'demo') {
+    return '예시 모드 · 실제 수집 상태 아님';
+  }
+
+  if (channel.status === 'syncing') {
+    return '현재 문의 수집 중';
+  }
+
+  if (channel.status === 'error') {
+    return '마지막 수집 실패 · 오류 확인 필요';
+  }
+
+  if (channel.status === 'connected' && channel.last_sync) {
+    return '마지막 수집 성공';
+  }
+
+  if (channel.config.enabled) {
+    return '수집 설정 완료 · 첫 수집 대기';
+  }
+
+  return '아직 실제 수집하지 않음';
+}
+
 function channels() {
   const total = state.data.channels.reduce((count, c) => count + c.config.sources.length, 0);
   return `${heading('모든 채널을 하나로', `${state.data.channels.length}개 채널·계정, ${total}개 문의함을 한곳에서 관리합니다.`)}
   <div class="info-strip">${icon('info')}<p>자동 수집 시작을 누르면 준비된 문의함을 바로 읽고 이후 10분마다 수집합니다. 프로그램 재실행 시에도 수집합니다. 연동 준비 중인 문의함은 제외하며, 전용 브라우저 로그인이 필요합니다. 네이버 비욘드와 쿼터는 서로 다른 로그인 세션을 사용하며, 수집·전송 전 스토어명을 확인합니다.</p></div>
   <div class="channel-grid">${state.data.channels.map(c => `<article class="channel-card"><div class="channel-card-top">${badge(c.id)}<span class="connection-state ${c.status === 'connected' && c.config.enabled ? 'connected' : ''}">${c.status === 'connected' && c.config.enabled ? '연결됨' : c.status === 'syncing' ? '수집 중' : c.status === 'error' ? '연결 확인 필요' : c.config.enabled ? '설정됨 · 수집 전' : c.automation?.some(s => s.ready) ? '자동 수집 시작 가능' : '연동 준비 중'}</span></div><h2>${escape(c.name)}</h2><p>${c.config.sources.length}개 문의함 · ${escape(c.config.replyShopName || state.data.shop)}</p>
   <div class="source-links">${c.config.sources.map(source => { const url = c.resolvedSources?.find(s => s.id === source.id)?.url; return url ? `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(source.name)}${icon('external')}</a><small>${c.automation?.find(s => s.id === source.id)?.ready ? '자동 수집 지원 · 로그인 확인 필요' : '자동 수집 연동 준비 중'}</small>${source.dateRange ? `<small>한국 시간 기준 최근 ${source.dateRange.days}일 자동 갱신</small>` : ''}` : `<span>${escape(source.name)} · 주소 미등록</span>`; }).join('')}</div>
-  ${c.requireAccountCheck ? '<div class="account-note">계정별 독립 로그인 · 스토어명 확인 필수</div>' : ''}<div class="channel-meta">${c.last_sync ? `최근 수집 ${date(c.last_sync)}` : '로그인·문의 화면 설정 전'}</div>${c.error ? `<p class="channel-error">${escape(c.error)}</p>` : ''}${state.mode === 'live' ? `<button class="button primary wide" data-action="start-automatic" data-id="${c.id}" ${state.busy || state.data.syncing || !c.automation?.some(s => s.ready) ? 'disabled' : ''}>${c.automation?.some(s => s.ready) ? '자동 수집 시작' : '자동 수집 연동 준비 중'}</button>` : ''}<button class="button wide" data-action="configure-channel" data-id="${c.id}">${icon('link')} 연결 설정 ${icon('arrow')}</button>${state.mode === 'live' ? `<details class="manual-tools"><summary>보조 기능</summary><button class="button wide" data-action="manual-add" data-id="${c.id}">문의 직접 등록</button></details>` : ''}</article>`).join('')}</div>`;
+  ${c.requireAccountCheck ? '<div class="account-note">계정별 독립 로그인 · 스토어명 확인 필수</div>' : ''}
+<div class="channel-meta">
+  <strong>${escape(channelCollectionStatus(c))}</strong>
+  <span>
+    ${state.mode === 'demo'
+      ? '실제 운영 모드에서 수집 기록 확인 가능'
+      : c.last_sync
+        ? `마지막 수집 ${date(c.last_sync)}`
+        : '수집 기록 없음'}
+  </span>
+</div>
+${c.error ? `<p class="channel-error">${escape(c.error)}</p>` : ''}${state.mode === 'live' ? `<button class="button primary wide" data-action="start-automatic" data-id="${c.id}" ${state.busy || state.data.syncing || !c.automation?.some(s => s.ready) ? 'disabled' : ''}>${c.automation?.some(s => s.ready) ? '자동 수집 시작' : '자동 수집 연동 준비 중'}</button>` : ''}<button class="button wide" data-action="configure-channel" data-id="${c.id}">${icon('link')} 연결 설정 ${icon('arrow')}</button>${state.mode === 'live' ? `<details class="manual-tools"><summary>보조 기능</summary><button class="button wide" data-action="manual-add" data-id="${c.id}">문의 직접 등록</button></details>` : ''}</article>`).join('')}</div>`;
 }
 function templates() {
   const drafts = state.templateDrafts || state.data.templates;
