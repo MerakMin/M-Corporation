@@ -11,7 +11,7 @@ import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED } from './fashionplus-qna.js';
 import { COUPANG_PRODUCT, COUPANG_SEND_BLOCKED } from './coupang-product.js';
 import { FASHIONPLUS_NOTIFICATIONS, NOTICE_SEND_BLOCKED } from './fashionplus-notifications.js';
 import { collectionSummary } from './collectors/collection-report.js';
-
+import { getCollectionHistory } from './collectors/collection-history.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INTERVAL = 10 * 60 * 1000;
@@ -116,12 +116,56 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
           const message = errors.length ? errors.join(' / ') : null;
           db.prepare('UPDATE channels SET status=?, last_sync=?, error=? WHERE id=?').run(message ? 'error' : 'connected', new Date().toISOString(), message, def.id);
           store.event('live', null, message ? 'sync_failed' : 'sync', `${def.name}: ${count}건 확인, ${added}건 추가, ${completed}건 완료 반영${message ? ` · ${message}` : ''}`);
-          results.push({ channel: def.id, added, completed, ok: !message, ...(message ? { error: message } : {}) });
+          
+const result = {
+  channel: def.id,
+  added,
+  completed,
+  ok: !message,
+  ...(message ? { error: message } : {})
+};
+
+db.prepare(`
+  INSERT INTO collection_runs
+    (channel, collected_at, added, completed, ok, error)
+  VALUES (?, ?, ?, ?, ?, ?)
+`).run(
+  def.id,
+  new Date().toISOString(),
+  added,
+  completed,
+  result.ok ? 1 : 0,
+  message
+);
+
+results.push(result);
+
         } catch (error) {
           const message = error instanceof AppError ? error.message : '문의 화면을 읽지 못했습니다. 로그인·URL·선택자와 브라우저 설치 상태를 확인하세요.';
           db.prepare("UPDATE channels SET status='error', error=? WHERE id=?").run(message, def.id);
           store.event('live', null, 'sync_failed', `${def.name}: ${message}`);
-          results.push({ channel: def.id, added, completed, ok: false, error: message });
+          
+db.prepare(`
+  INSERT INTO collection_runs
+    (channel, collected_at, added, completed, ok, error)
+  VALUES (?, ?, ?, ?, ?, ?)
+`).run(
+  def.id,
+  new Date().toISOString(),
+  added,
+  completed,
+  0,
+  message
+);
+
+results.push({
+  channel: def.id,
+  added,
+  completed,
+  ok: false,
+  error: message
+});
+
         }
       }
       
@@ -137,6 +181,23 @@ return {
   armTimer();
   async function route(method, path, query, body) {
     if (method === 'GET' && path === '/api/health') return { ok: true };
+
+    if (method === 'GET' && path === '/api/collection-history') {
+      const mode = modeOf(query.get('mode') || 'demo');
+
+      if (mode === 'demo') {
+        return {
+          mode: 'demo',
+          history: [],
+        };
+      }
+
+      return {
+        mode: 'live',
+        history: getCollectionHistory(db),
+      };
+    }
+
     if (method === 'GET' && path === '/api/state') {
       const mode = modeOf(query.get('mode') || 'demo');
       return {

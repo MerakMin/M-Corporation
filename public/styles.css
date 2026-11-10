@@ -18,3 +18,72 @@ dialog{border:1px solid #eae4f1;border-radius:16px;padding:0;width:min(620px,cal
 @media(max-width:480px){.inquiry-card h3{font-size:12px}.inquiry-card p{font-size:11px}.customer-name{font-size:9px}.metric>div>span{font-size:9px}.metric strong{font-size:24px}.draft-caption,.product-reference{font-size:10px}.tab{font-size:10px}.page-heading p{font-size:11px}.original-message,.draft-editor{font-size:12px}.draft-warning{font-size:10px}}
 
 .manual-tools{margin-top:12px;font-size:11px;color:#8f809e}.manual-tools summary{cursor:pointer}.manual-tools .button{margin-top:8px}
+
+/* 고객 문의 수집 이력 */
+
+.channel-history {
+  margin-top: 28px;
+  padding: 28px;
+  background: #ffffff;
+  border: 1px solid #e8e6ef;
+  border-radius: 16px;
+}
+
+.channel-history h2 {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #252535;
+}
+
+.channel-history > p {
+  margin: 0;
+  padding: 18px;
+  background: #f7f5fc;
+  border-radius: 10px;
+  color: #77718e;
+  font-size: 14px;
+}
+
+.channel-history-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid #efedf4;
+}
+
+.channel-history-item:last-child {
+  border-bottom: none;
+}
+
+.channel-history-item strong {
+  min-width: 80px;
+  color: #7155c7;
+  font-size: 13px;
+}
+
+.channel-history-item span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #454052;
+  font-size: 14px;
+}
+
+.channel-history-item small {
+  color: #9993a8;
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .channel-history {
+    padding: 18px;
+  }
+
+  .channel-history-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}

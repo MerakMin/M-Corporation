@@ -22,6 +22,16 @@ export function openStore(dataDir) {
     );
     CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, mode TEXT NOT NULL, name TEXT NOT NULL, sizes TEXT NOT NULL, UNIQUE(mode, name));
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT NOT NULL, inquiry_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
+
+    CREATE TABLE IF NOT EXISTS collection_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    collected_at TEXT NOT NULL,
+    added INTEGER NOT NULL DEFAULT 0,
+    completed INTEGER NOT NULL DEFAULT 0,
+    ok INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+    );
   `);
   if (!db.prepare('PRAGMA table_info(inquiries)').all().some(column => column.name === 'detail_external_id')) db.exec("ALTER TABLE inquiries ADD COLUMN detail_external_id TEXT NOT NULL DEFAULT ''");
   for (const [name, type] of [['completion_origin', "TEXT NOT NULL DEFAULT ''"], ['remote_status_checked_at', 'TEXT']]) {

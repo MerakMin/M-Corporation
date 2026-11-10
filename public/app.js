@@ -36,11 +36,21 @@ async function api(path, options = {}) {
   const response = await fetch(`/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers }, body: options.body ? JSON.stringify(options.body) : undefined });
   const result = await response.json(); if (!response.ok) throw new Error(result.error || '요청에 실패했습니다.'); return result;
 }
+
 async function refresh(render = true) {
   state.data = await api(`/state?mode=${state.mode}`);
-  if (!state.selected || !state.data.inquiries.some(i => i.id === state.selected)) state.selected = state.data.inquiries.find(waiting)?.id || state.data.inquiries[0]?.id || null;
+
+  await loadCollectionHistory();
+
+  if (!state.selected || !state.data.inquiries.some(i => i.id === state.selected)) {
+    state.selected = state.data.inquiries.find(waiting)?.id
+      || state.data.inquiries[0]?.id
+      || null;
+  }
+
   if (render) draw();
 }
+
 function navigation(page, label, glyph, extra = '') { return `<button class="nav-item ${state.page === page ? 'active' : ''}" data-action="navigate" data-page="${page}" aria-label="${label}">${icon(glyph)}<span>${label}</span>${extra}</button>`; }
 function shell(content) {
   const pending = state.data.inquiries.filter(waiting).length;
@@ -130,6 +140,62 @@ function channelCollectionStatus(channel) {
   return '아직 실제 수집하지 않음';
 }
 
+async function loadCollectionHistory() {
+  if (state.mode !== 'live') {
+    state.collectionHistory = [];
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/collection-history?mode=live');
+
+    if (!response.ok) {
+      throw new Error('수집 이력을 불러오지 못했습니다.');
+    }
+
+    const data = await response.json();
+    state.collectionHistory = data.history || [];
+  } catch (error) {
+    console.error('수집 이력 조회 실패:', error);
+    state.collectionHistory = [];
+  }
+}
+
+function collectionHistorySection() {
+  if (state.mode !== 'live') {
+    return `
+      <section class="channel-history">
+        <h2>최근 문의 수집 이력</h2>
+        <p>실제 운영 모드에서 수집 기록을 확인할 수 있습니다.</p>
+      </section>
+    `;
+  }
+
+  const history = state.collectionHistory || [];
+
+  if (!history.length) {
+    return `
+      <section class="channel-history">
+        <h2>최근 문의 수집 이력</h2>
+        <p>아직 저장된 수집 기록이 없습니다.</p>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="channel-history">
+      <h2>최근 문의 수집 이력</h2>
+      ${history.map(item => `
+        <div class="channel-history-item">
+          <strong>${item.status === 'success' ? '수집 성공' : '수집 실패'}</strong>
+          <span>${escape(item.detail)}</span>
+          <small>${date(item.collectedAt)}</small>
+        </div>
+      `).join('')}
+    </section>
+  `;
+}
+
 function channels() {
   const total = state.data.channels.reduce((count, c) => count + c.config.sources.length, 0);
   return `${heading('모든 채널을 하나로', `${state.data.channels.length}개 채널·계정, ${total}개 문의함을 한곳에서 관리합니다.`)}
@@ -147,7 +213,8 @@ function channels() {
         : '수집 기록 없음'}
   </span>
 </div>
-${c.error ? `<p class="channel-error">${escape(c.error)}</p>` : ''}${state.mode === 'live' ? `<button class="button primary wide" data-action="start-automatic" data-id="${c.id}" ${state.busy || state.data.syncing || !c.automation?.some(s => s.ready) ? 'disabled' : ''}>${c.automation?.some(s => s.ready) ? '자동 수집 시작' : '자동 수집 연동 준비 중'}</button>` : ''}<button class="button wide" data-action="configure-channel" data-id="${c.id}">${icon('link')} 연결 설정 ${icon('arrow')}</button>${state.mode === 'live' ? `<details class="manual-tools"><summary>보조 기능</summary><button class="button wide" data-action="manual-add" data-id="${c.id}">문의 직접 등록</button></details>` : ''}</article>`).join('')}</div>`;
+${c.error ? `<p class="channel-error">${escape(c.error)}</p>` : ''}${state.mode === 'live' ? `<button class="button primary wide" data-action="start-automatic" data-id="${c.id}" ${state.busy || state.data.syncing || !c.automation?.some(s => s.ready) ? 'disabled' : ''}>${c.automation?.some(s => s.ready) ? '자동 수집 시작' : '자동 수집 연동 준비 중'}</button>` : ''}<button class="button wide" data-action="configure-channel" data-id="${c.id}">${icon('link')} 연결 설정 ${icon('arrow')}</button>${state.mode === 'live' ? `<details class="manual-tools"><summary>보조 기능</summary><button class="button wide" data-action="manual-add" data-id="${c.id}">문의 직접 등록</button></details>` : ''}</article>`).join('')}</div>
+${collectionHistorySection()}`;
 }
 function templates() {
   const drafts = state.templateDrafts || state.data.templates;
