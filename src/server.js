@@ -4,7 +4,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { openStore } from './store.js';
-import { createConnectors, validateConfig } from './connectors.js';
+import { createConnectors, validateConfig, safeUrl } from './connectors.js';
 import { AppError, CATEGORIES, CHANNELS, makeDraft, missingFields } from './domain.js';
 import { resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED } from './fashionplus-qna.js';
@@ -34,6 +34,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
   };
   const sendBlockedReason = row => {
     if (row.mode !== 'live') return null;
+    if (row.inquiry_kind === 'manual') return '직접 등록한 문의입니다. 초안을 복사해 원문에서 답변하고 완료 표시를 해 주세요. 자동 수집·전송 대상에는 포함되지 않습니다.';
     const adapter = store.channel(row.channel)?.config.sources.find(s => s.id === row.source)?.adapter;
     if (row.inquiry_kind === 'notification' || adapter === FASHIONPLUS_NOTIFICATIONS) return NOTICE_SEND_BLOCKED;
     return adapter === FASHIONPLUS_QNA ? QNA_SEND_BLOCKED : adapter === COUPANG_PRODUCT ? COUPANG_SEND_BLOCKED : null;
@@ -65,7 +66,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
         // Check saved detail URLs first, independently of the pending list.
         // A later list failure must not discard already verified completions.
         const sources = new Set(channel.config.sources.filter(s => s.enabled !== false && [FASHIONPLUS_QNA, FASHIONPLUS_NOTIFICATIONS].includes(s.adapter)).map(s => s.id));
-        const targets = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND channel=? AND status IN ('pending','failed') ORDER BY collected_at").all(def.id).filter(row => sources.has(row.source));
+        const targets = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND channel=? AND status IN ('pending','failed') AND inquiry_kind<>'manual' ORDER BY collected_at").all(def.id).filter(row => sources.has(row.source));
         if (targets.length) {
           try {
             if (!browser.checkCompletions) throw new AppError('완료 상태 확인 기능을 사용할 수 없습니다.');
@@ -140,6 +141,34 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
       };
     }
     if (method === 'POST' && path === '/api/sync') return sync(modeOf(body.mode));
+    if (method === 'POST' && path === '/api/inquiries/manual') {
+      if (modeOf(body.mode) !== 'live') throw new AppError('직접 등록은 실제 운영 모드에서 사용하세요.');
+      if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(body.requestId || '')) throw new AppError('등록 요청 ID를 확인하세요.');
+      const channel = store.channel(body.channel);
+      const source = channel?.config.sources.find(s => s.id === body.source);
+      if (!source?.url) throw new AppError('등록할 채널과 문의함을 선택하세요.');
+      if (body.channel === 'fashionplus' && source.id === 'fashionplus-0') throw new AppError('CS알리미는 운영 알림 수집을 이용하세요.');
+      for (const key of ['url', 'title', 'customer', 'product']) if (body[key] != null && typeof body[key] !== 'string') throw new AppError('문의 입력 형식을 확인하세요.');
+      const sourceUrl = safeUrl(resolvedSourceUrl(source));
+      const url = safeUrl(body.url?.trim() || sourceUrl);
+      if (new URL(url).origin !== new URL(sourceUrl).origin) throw new AppError('선택한 문의함과 같은 사이트의 원문 주소를 입력하세요.');
+      const content = string(body.body, '문의 내용');
+      const item = { channel: channel.id, source: source.id, inquiry_kind: 'manual', external_id: `manual-${body.requestId}`,
+        title: string(body.title?.trim() || content.slice(0, 100), '제목', 200), body: content,
+        customer: string(body.customer?.trim() || '고객', '고객명', 100), product: body.product?.trim() ? string(body.product, '상품명', 500) : '', url };
+      const previous = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND external_id=?").get(item.external_id);
+      if (previous) {
+        if (['channel', 'source', 'title', 'body', 'customer', 'product', 'url'].some(key => previous[key] !== item[key])) throw new AppError('이미 처리한 등록 요청입니다. 새 문의 등록 창을 열어 주세요.', 409);
+        return publicInquiry(previous);
+      }
+      db.exec('BEGIN');
+      try {
+        store.addInquiry('live', item);
+        const saved = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND external_id=?").get(item.external_id);
+        store.event('live', saved.id, 'manual_added', `${source.name} 문의를 직접 등록했습니다. 원문 수집 결과가 아닙니다.`);
+        db.exec('COMMIT'); return publicInquiry(saved);
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    }
     if (method === 'PUT' && path === '/api/settings') {
       const shop = string(body.shop, '상호명', 100);
       const templates = {};
@@ -195,13 +224,18 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
       db.prepare('DELETE FROM products WHERE id=? AND mode=?').run(productMatch[1], mode);
       return { ok: true };
     }
-    const inquiryMatch = path.match(/^\/api\/inquiries\/([\w-]+)(?:\/(regenerate|send|resolve))?$/);
+    const inquiryMatch = path.match(/^\/api\/inquiries\/([\w-]+)(?:\/(regenerate|send|resolve|manual-state))?$/);
     if (inquiryMatch) {
       const mode = modeOf(body.mode);
       const row = getInquiry(inquiryMatch[1], mode);
       checkVersion(row, body.version);
       const action = inquiryMatch[2];
-      if (method === 'PATCH' && !action) {
+      if (method === 'POST' && action === 'manual-state') {
+        if (mode !== 'live' || row.inquiry_kind !== 'manual' || body.confirmed !== true || !['sent', 'pending'].includes(body.outcome) || !['pending', 'sent'].includes(row.status)) throw new AppError('직접 등록한 문의의 원문 처리 여부를 확인하세요.', 409);
+        const now = new Date().toISOString();
+        db.prepare("UPDATE inquiries SET status=?,completion_origin=?,remote_status_checked_at=?,sent_at=NULL,sent_body=NULL,error=NULL,version=version+1 WHERE id=?").run(body.outcome, body.outcome === 'sent' ? 'manual_confirmation' : '', body.outcome === 'sent' ? now : null, row.id);
+        store.event(mode, row.id, 'manual_state', body.outcome === 'sent' ? '사용자가 원문 처리 완료로 표시했습니다. 자동 게시 확인은 아닙니다.' : '직접 등록한 문의를 대기 상태로 되돌렸습니다.');
+      } else if (method === 'PATCH' && !action) {
         editable(row);
         const draft = string(body.draft, '답변', 10000);
         if (!CATEGORIES.includes(body.category)) throw new AppError('문의 유형을 확인하세요.');

@@ -198,6 +198,7 @@ export function createConnectors(dataDir) {
       });
     },
     async send(channel, inquiry) {
+      if (inquiry.inquiry_kind === 'manual') throw new AppError('직접 등록한 문의는 원문에서 직접 답변하세요.', 409);
       if (inquiry.inquiry_kind === 'notification' || channel.config.sources.find(s => s.id === inquiry.source)?.adapter === FASHIONPLUS_NOTIFICATIONS) throw new AppError(NOTICE_SEND_BLOCKED, 409);
       if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === COUPANG_PRODUCT) throw new AppError(COUPANG_SEND_BLOCKED, 409);
       if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === FASHIONPLUS_QNA) throw new AppError(QNA_SEND_BLOCKED, 409);

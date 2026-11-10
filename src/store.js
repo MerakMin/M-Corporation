@@ -152,7 +152,7 @@ export function openStore(dataDir) {
     const category = classify(`${data.title} ${data.body}`);
     const draft = makeDraft({ ...data, category }, getSetting('templates'), replyShop(data.channel), products(mode));
     const now = new Date().toISOString();
-    return db.prepare(`INSERT OR IGNORE INTO inquiries (id,mode,channel,source,external_id,customer,title,body,product,url,category,draft,created_at,collected_at,detail_external_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), mode, data.channel, data.source, data.external_id, data.customer || '고객', data.title || '새 문의', data.body, data.product || '', data.url || '', category, draft, data.created_at || now, now, data.detail_external_id || '').changes;
+    return db.prepare(`INSERT OR IGNORE INTO inquiries (id,mode,channel,source,external_id,customer,title,body,product,url,category,draft,created_at,collected_at,detail_external_id,inquiry_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), mode, data.channel, data.source, data.external_id, data.customer || '고객', data.title || '새 문의', data.body, data.product || '', data.url || '', category, draft, data.created_at || now, now, data.detail_external_id || '', data.inquiry_kind === 'manual' ? 'manual' : 'customer').changes;
   };
   const recordNotificationStatus = (snapshot, observed) => {
     const status = notificationState(observed.remote_status, observed.remote_closed);

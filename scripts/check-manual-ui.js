@@ -1,0 +1,42 @@
+import { chromium } from 'playwright';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createApp } from '../src/server.js';
+import { browserOptions } from '../src/connectors.js';
+
+const dir = await mkdtemp(join(tmpdir(), 'cs-manual-ui-'));
+const app = createApp({ dataDir: dir, scheduler: false });
+await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+const browser = await chromium.launch(browserOptions());
+const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+try {
+  await page.goto(`http://127.0.0.1:${app.server.address().port}`);
+  await page.locator('#mode-select').selectOption('live');
+  await page.getByRole('button', { name: '문의 직접 등록', exact: true }).click();
+  assert.equal(await page.locator('#manual-inbox option').count(), 17);
+  await page.locator('#manual-inbox').selectOption('coupang/coupang-0');
+  assert.match(await page.locator('#manual-url').inputValue(), /csinquiry/);
+  await page.getByRole('textbox', { name: '문의 내용 (필수)', exact: true }).fill('배송 예정일이 궁금합니다.');
+  await page.getByRole('button', { name: '등록하고 초안 보기', exact: true }).click();
+  await page.getByRole('button', { name: '원문 처리 완료 표시', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '검토 후 전송', exact: true }).count(), 0);
+  await page.getByRole('textbox', { name: '답변 초안', exact: true }).fill('확인 후 안내드리겠습니다.');
+  await page.getByRole('button', { name: '원문 처리 완료 표시', exact: true }).click();
+  await page.getByRole('button', { name: '상태 변경', exact: true }).click();
+  await page.getByRole('button', { name: '대기로 되돌리기', exact: true }).waitFor();
+  assert.match(await page.locator('.draft-caption').innerText(), /자동으로 게시를 확인한 내용은 아닙니다/);
+  assert.equal(await page.locator('#draft-editor').inputValue(), '확인 후 안내드리겠습니다.');
+  await page.getByRole('button', { name: '대기로 되돌리기', exact: true }).click();
+  await page.getByRole('button', { name: '상태 변경', exact: true }).click();
+  await page.getByRole('button', { name: '원문 처리 완료 표시', exact: true }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  await page.locator('[data-action="navigate"][data-page="channels"]').click();
+  assert.equal(await page.getByRole('button', { name: '문의 직접 등록', exact: true }).count(), 9);
+  assert.deepEqual(errors, []);
+  console.log('Manual workflow UI passed: 17 inboxes, registration, draft editing, completion/reopen, nine channel entries, mobile layout.');
+} finally { await browser.close(); await app.close(); await rm(dir, { recursive: true, force: true }); }
