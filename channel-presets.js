@@ -15,7 +15,7 @@ const presets = [
     { name: '고객 문의', url: 'https://wing.coupang.com/tenants/cs/product/inquiries', adapter: 'coupang-product-readonly' },
   ] },
   { id: 'cafe24', name: '카페24 자사몰', mark: '24', color: '#3563e9', sources: [
-    { name: '미답변 상품 문의', url: 'https://beyondmyself.cafe24.com/admin/php/shop1/b/board_admin_bulletin_l.php?start_date=2026-09-21&end_date=2026-10-21&period=30&sel_board_no=6&sel_spam_view=not&search_channel=&list_limit=10&search=subject&search_key=&is_reply=&is_comment=&real_filename=&mem_type=&report_status=&board_category=&no_member_article=F&navi_hide=&searchSort=', dateRange: { days: 30, startParam: 'start_date', endParam: 'end_date', periodParam: 'period' } },
+   { name: '미답변 상품 문의', adapter: 'cafe24-qna-readonly', url: 'https://beyondmyself.cafe24.com/admin/php/shop1/b/board_admin_bulletin_l.php?start_date=2026-09-21&end_date=2026-10-21&period=30&sel_board_no=6&sel_spam_view=not&search_channel=&list_limit=10&search=subject&search_key=&is_reply=&is_comment=&real_filename=&mem_type=&report_status=&board_category=&no_member_article=F&navi_hide=&searchSort=', dateRange: { days: 30, startParam: 'start_date', endParam: 'end_date', periodParam: 'period' } },
   ] },
   { id: 'hiver', name: '하이버', mark: 'H', color: '#323239', sources: [
     { name: '답변 대기 Q&A', url: 'https://seller-admin.hiver.co.kr/qna?page=1&status=%EB%8B%B5%EB%B3%80%EB%8C%80%EA%B8%B0&searchType=%EC%83%81%ED%92%88%EB%B2%88%ED%98%B8&from=2026-09-21&to=2026-10-21', dateRange: { days: 30, startParam: 'from', endParam: 'to' } },
