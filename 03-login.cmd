@@ -38,7 +38,7 @@ if "%selection%"=="7" set "channel=smartstore"
 if "%selection%"=="8" set "channel=smartstore_quarter"
 if "%selection%"=="9" set "channel=naverpay"
 if not defined channel goto failed
-node scripts/login.js %channel%
+node %MCORP_NODE_ENV_FILE% scripts/login.js %channel%
 if errorlevel 1 goto failed
 echo.
 echo Run this file again to log in to another site.

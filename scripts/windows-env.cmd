@@ -19,4 +19,6 @@ if errorlevel 1 (
   echo npm was not found. Reinstall Node.js with the default options.
   exit /b 1
 )
+set "MCORP_NODE_ENV_FILE="
+if exist ".env" set "MCORP_NODE_ENV_FILE=--env-file=.env"
 exit /b 0

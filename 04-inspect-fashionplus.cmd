@@ -19,9 +19,9 @@ choice /c 12Q /n /m "Choose an inbox: "
 set "selection=%errorlevel%"
 if "%selection%"=="3" exit /b 0
 if "%selection%"=="1" (
-  node scripts/inspect-fashionplus.js
+  node %MCORP_NODE_ENV_FILE% scripts/inspect-fashionplus.js
 ) else (
-  node scripts/inspect-fashionplus.js --notifications
+  node %MCORP_NODE_ENV_FILE% scripts/inspect-fashionplus.js --notifications
 )
 if errorlevel 1 goto failed
 pause

@@ -22,7 +22,7 @@ set "target="
 if "%selection%"=="1" set "target=product"
 if "%selection%"=="2" set "target=center"
 if not defined target goto failed
-node scripts/inspect-coupang.js %target%
+node %MCORP_NODE_ENV_FILE% scripts/inspect-coupang.js %target%
 if errorlevel 1 goto failed
 pause
 exit /b 0

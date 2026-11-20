@@ -12,7 +12,7 @@ if not exist "node_modules\playwright\package.json" (
 )
 echo Open the address shown below in Whale.
 echo Keep this window open while using the application. Press Ctrl+C to stop.
-node src/server.js
+node %MCORP_NODE_ENV_FILE% src/server.js
 if errorlevel 1 goto failed
 exit /b 0
 :failed
