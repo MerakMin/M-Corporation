@@ -1,3 +1,4 @@
+import { NAVER_INQUIRIES, NAVER_SEND_BLOCKED } from './naver-inquiries.js';
 import { CAFE24_INQUIRIES, CAFE24_SEND_BLOCKED } from './cafe24-inquiries.js';
 import { COUPANG_CENTER, CENTER_SEND_BLOCKED } from './coupang-center.js';
 import http from 'node:http';
@@ -6,7 +7,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { openStore } from './store.js';
-import { createConnectors, validateConfig, safeUrl, automaticCollectionPlan } from './connectors.js';
+import { createConnectors, validateConfig, safeUrl, automaticCollectionPlan, READ_ONLY_SEND_BLOCKED } from './connectors.js';
 import { AppError, CATEGORIES, CHANNELS, makeDraft, missingFields } from './domain.js';
 import { resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED } from './fashionplus-qna.js';
@@ -37,7 +38,10 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
   const sendBlockedReason = row => {
     if (row.mode !== 'live') return null;
     if (row.inquiry_kind === 'manual') return '직접 등록한 문의입니다. 초안을 복사해 원문에서 답변하고 완료 표시를 해 주세요. 자동 수집·전송 대상에는 포함되지 않습니다.';
-    const adapter = store.channel(row.channel)?.config.sources.find(s => s.id === row.source)?.adapter;
+    const source = store.channel(row.channel)?.config.sources.find(s => s.id === row.source);
+    const adapter = source?.adapter;
+    if (adapter === NAVER_INQUIRIES) return NAVER_SEND_BLOCKED;
+    if (source?.readOnly) return READ_ONLY_SEND_BLOCKED;
     if (row.inquiry_kind === 'notification' || adapter === FASHIONPLUS_NOTIFICATIONS) return NOTICE_SEND_BLOCKED;
     if (adapter === CAFE24_INQUIRIES) return CAFE24_SEND_BLOCKED;
     if (adapter === COUPANG_CENTER) return CENTER_SEND_BLOCKED;

@@ -13,5 +13,8 @@
     "login": "node scripts/login.js",
     "inspect:inbox": "node scripts/inspect-inbox.js"
   },
-  "dependencies": { "playwright": "1.61.1" }
+  "dependencies": {
+    "bcryptjs": "3.0.3",
+    "playwright": "1.61.1"
+  }
 }

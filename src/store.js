@@ -102,12 +102,13 @@ export function openStore(dataDir) {
       previous.presetVersion = 4;
       db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
     }
-    if (channel.id === 'cafe24' && previous.presetVersion === 2) {
-      const preset = defaults.sources[0];
-      const source = previous.sources.find(s => s.id === preset.id);
-      if (source && source.url === preset.url && !source.adapter && !Object.values(source.selectors || {}).some(value => value?.trim())) {
-        source.adapter = preset.adapter;
-        source.enabled = false;
+    if (['cafe24', 'smartstore', 'smartstore_quarter', 'naverpay'].includes(channel.id) && previous.presetVersion === 2) {
+      for (const preset of defaults.sources.filter(source => source.adapter)) {
+        const source = previous.sources.find(s => s.id === preset.id);
+        if (source && source.url === preset.url && !source.adapter && !Object.values(source.selectors || {}).some(value => value?.trim())) {
+          source.adapter = preset.adapter;
+          source.enabled = false;
+        }
       }
       previous.presetVersion = 3;
       db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);

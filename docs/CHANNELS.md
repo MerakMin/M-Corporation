@@ -14,6 +14,27 @@
 
 PDF의 ‘로그인만 해 두면 동작’은 별도의 브라우저 조작 에이전트를 전제로 합니다. 이 구현은 로컬 Playwright 브라우저를 사용하므로 평소 사용하는 Chrome 로그인과 세션이 분리됩니다. PC를 바꾸면 로그인도 다시 해야 합니다.
 
+## 네이버 커머스API 문의 수집
+
+비욘드와 쿼터는 각각 상품 Q&A·네이버페이 문의를, 네이버 페이센터는 고객 문의를 커머스API로 수집합니다. 최근 30일의 미답변 문의를 읽고, 답변은 원문에서 등록합니다. 고객센터 문의와 톡톡은 브라우저 문의함으로 별도 연결합니다. [상품 문의 목록 조회](https://apicenter.commerce.naver.com/docs/commerce-api/current/get-comments-contents) · [고객 문의 조회](https://apicenter.commerce.naver.com/docs/commerce-api/current/get-customer-inquiry-pay-user)
+
+각 판매자 계정에서 발급한 자체 애플리케이션(SELF)의 ID와 시크릿을 로컬 `.env`에 입력합니다. 다음 중 사용하는 계정의 값만 설정합니다. 다른 계정의 값을 넣으면 해당 계정의 문의를 읽으므로, 앱을 발급한 판매자 계정과 채널을 대조하세요.
+
+```dotenv
+CS_NAVER_BEYOND_CLIENT_ID=
+CS_NAVER_BEYOND_CLIENT_SECRET=
+CS_NAVER_QUARTER_CLIENT_ID=
+CS_NAVER_QUARTER_CLIENT_SECRET=
+CS_NAVER_PAY_CLIENT_ID=
+CS_NAVER_PAY_CLIENT_SECRET=
+```
+
+`02-start.cmd`로 재시작한 뒤 **실제 운영 → 채널 연결 → 자동 수집 시작**을 누릅니다. 앱 ID는 채널 간 중복 사용할 수 없습니다. 실제 계정의 API 권한과 문의함 일치 여부는 확인이 필요합니다. [커머스API 인증](https://apicenter.commerce.naver.com/docs/auth)
+
+## 하이버·에이블리·룩핀 읽기 전용 수집
+
+등록된 문의함은 **채널 연결 → 연결 설정 → 읽기 전용 수집**으로 설정할 수 있습니다. 수집에는 `ready`, `row`, `idAttribute`, `body`, `link` 선택자가 필요하며 빈 문의함 판별과 페이지 이동은 `empty`, `next`를 설정합니다. 각 플랫폼의 실제 로그인 화면에서 이 선택자를 확인해야 합니다. 답변은 플랫폼 원문에서 등록합니다. 네이버의 브라우저 문의함에도 같은 수집 설정을 적용할 수 있으며 계정 확인은 계속 필요합니다.
+
 ## 카페24 미답변 상품 문의
 
 카페24 채널 로그인 후 **자동 수집 시작**을 누릅니다. 게시판 6번의 **답변 전** 필터로 조회하며, 표의 검색 건수와 표시 행이 일치할 때 미리보기에서 **원글**을 읽습니다. 답변 글과 답변 완료·처리 중인 문의는 수집에서 제외합니다. 검색 건수와 현재 페이지의 행 수가 다르면 오류를 표시하므로 한 화면에 모든 결과가 표시되는 범위에서 이용합니다.

@@ -1,3 +1,4 @@
+import { NAVER_INQUIRIES, NAVER_SEND_BLOCKED, createNaverCollector, naverCredentials, validateNaverSource } from './naver-inquiries.js';
 import { CAFE24_INQUIRIES, CAFE24_SEND_BLOCKED, collectCafe24Inquiries, validateCafe24Source } from './cafe24-inquiries.js';
 import { COUPANG_CENTER, CENTER_SEND_BLOCKED, centerCredentials, collectCoupangCenter, validateCoupangCenterSource } from './coupang-center.js';
 import { chromium } from 'playwright';
@@ -20,16 +21,22 @@ export function safeUrl(value) {
   if (url.username || url.password || (!['https:'].includes(url.protocol) && !(process.env.CS_ALLOW_LOCAL_CONNECTORS === '1' && url.protocol === 'http:')) || (local && process.env.CS_ALLOW_LOCAL_CONNECTORS !== '1')) throw new AppError('자격 증명이 없는 공개 HTTPS 주소를 사용하세요.');
   return url.href;
 }
+export const READ_ONLY_SEND_BLOCKED = '읽기 전용으로 수집한 문의입니다. 원문에서 직접 답변하세요.';
+const apiAdapters = new Set([COUPANG_CENTER, NAVER_INQUIRIES]);
+const listFields = ['ready', 'row', 'idAttribute', 'body', 'link'];
+const replyFields = ['detailIdentity', 'detailIdAttribute', 'editor', 'submit', 'postedReply'];
+
 export function validateConfig(config, definition = {}) {
   if (typeof config?.enabled !== 'boolean' || !Array.isArray(config.sources) || config.sources.length < 1 || config.sources.length > 10) throw new AppError('채널 설정 형식이 올바르지 않습니다.');
   if (config.replyShopName != null && (typeof config.replyShopName !== 'string' || config.replyShopName.length > 100)) throw new AppError('답변 상호는 100자 이하로 입력하세요.');
   if (config.accountCheck != null) {
     if (typeof config.accountCheck.selector !== 'string' || config.accountCheck.selector.length > 500 || typeof config.accountCheck.expectedText !== 'string' || config.accountCheck.expectedText.length > 100) throw new AppError('스토어 확인 설정을 확인하세요.');
   }
-  if (config.enabled && definition.requireAccountCheck && (!config.accountCheck?.selector?.trim() || !config.accountCheck?.expectedText?.trim())) throw new AppError('네이버 계정을 구분할 스토어명 선택자와 정확한 표시 이름을 입력하세요.');
+  if (config.enabled && definition.requireAccountCheck && config.sources.some(s => s?.enabled !== false && s?.adapter !== NAVER_INQUIRIES) && (!config.accountCheck?.selector?.trim() || !config.accountCheck?.expectedText?.trim())) throw new AppError('네이버 계정을 구분할 스토어명 선택자와 정확한 표시 이름을 입력하세요.');
   if (config.enabled && !config.sources.some(s => s.enabled !== false)) throw new AppError('수집할 문의함을 하나 이상 선택하세요.');
   const ids = new Set();
   for (const source of config.sources) {
+    if (source.readOnly != null && typeof source.readOnly !== 'boolean') throw new AppError('읽기 전용 설정을 확인하세요.');
     if (source.enabled != null && typeof source.enabled !== 'boolean') throw new AppError('문의함 활성화 값은 true 또는 false여야 합니다.');
     if (!/^[a-z0-9_-]{1,60}$/.test(source.id) || ids.has(source.id)) throw new AppError('수집함 ID는 중복 없는 영문·숫자여야 합니다.');
     ids.add(source.id);
@@ -38,13 +45,14 @@ export function validateConfig(config, definition = {}) {
     if (!source.selectors || typeof source.selectors !== 'object' || Array.isArray(source.selectors)) throw new AppError('선택자 설정이 필요합니다.');
     for (const value of Object.values(source.selectors)) if (typeof value !== 'string' || value.length > 500) throw new AppError('선택자는 500자 이하 문자열이어야 합니다.');
     if (source.adapter) {
-      if (source.adapter === CAFE24_INQUIRIES) validateCafe24Source(source, definition.id);
+      if (source.adapter === NAVER_INQUIRIES) validateNaverSource(source, definition.id);
+      else if (source.adapter === CAFE24_INQUIRIES) validateCafe24Source(source, definition.id);
       else if (source.adapter === FASHIONPLUS_QNA) validateQnaSource(source, definition.id);
       else if (source.adapter === FASHIONPLUS_NOTIFICATIONS) validateNotificationSource(source, definition.id);
       else if (source.adapter === COUPANG_CENTER) validateCoupangCenterSource(source, definition.id);
       else if (source.adapter === COUPANG_PRODUCT) validateCoupangProductSource(source, definition.id);
       else throw new AppError('지원하지 않는 전용 수집기입니다.');
-    } else if (config.enabled && source.enabled !== false && (!source.url || !['ready', 'row', 'idAttribute', 'body', 'link', 'detailIdentity', 'detailIdAttribute', 'editor', 'submit', 'postedReply'].every(key => source.selectors[key]?.trim()))) throw new AppError('연동을 켜려면 수집할 문의함의 URL과 필수 선택자를 모두 입력하세요.');
+    } else if (config.enabled && source.enabled !== false && (!source.url || !(source.readOnly ? listFields : [...listFields, ...replyFields]).every(key => source.selectors[key]?.trim()))) throw new AppError('연동을 켜려면 수집할 문의함의 URL과 필수 선택자를 모두 입력하세요.');
     if (source.maxPages != null && (!Number.isInteger(source.maxPages) || source.maxPages < 1 || source.maxPages > 100)) throw new AppError('최대 페이지 수는 1~100입니다.');
     if (source.dateRange != null) {
       const range = source.dateRange;
@@ -66,6 +74,7 @@ export function automaticCollectionPlan(channel, definition = {}) {
   return channel.config.sources.map(source => {
     try {
       if (source.adapter === COUPANG_CENTER) centerCredentials();
+      if (source.adapter === NAVER_INQUIRIES) naverCredentials(channel.id);
       if (!source.url) throw new AppError('문의함 주소가 필요합니다.');
       if (!source.adapter && !source.selectors?.ready) throw new AppError('자동 수집 연동 준비 중');
       validateConfig({ ...structuredClone(channel.config), enabled: true, sources: [{ ...structuredClone(source), enabled: true }] }, definition);
@@ -77,6 +86,7 @@ export function automaticCollectionPlan(channel, definition = {}) {
 }
 export function createConnectors(dataDir) {
   const busy = new Set();
+  const collectNaver = createNaverCollector();
   async function withChannel(channel, fn) {
     if (busy.has(channel.id)) throw new AppError('이 채널에서 다른 작업이 진행 중입니다. 잠시 후 다시 시도하세요.', 409);
     busy.add(channel.id);
@@ -203,10 +213,10 @@ export function createConnectors(dataDir) {
         catch (error) { return { source: source.id, error: `${source.name}: ${error instanceof AppError ? error.message : '문의 화면을 읽지 못했습니다.'}` }; }
       };
       const results = new Map();
-      for (const source of sources.filter(source => source.adapter === COUPANG_CENTER)) {
-        results.set(source.id, await read(source, () => collectCoupangCenter(channel, source)));
+      for (const source of sources.filter(source => apiAdapters.has(source.adapter))) {
+        results.set(source.id, await read(source, () => source.adapter === NAVER_INQUIRIES ? collectNaver(channel, source) : collectCoupangCenter(channel, source)));
       }
-      const browserSources = sources.filter(source => source.adapter !== COUPANG_CENTER);
+      const browserSources = sources.filter(source => !apiAdapters.has(source.adapter));
       if (browserSources.length) {
         try {
           await withChannel(channel, async context => {
@@ -229,6 +239,9 @@ export function createConnectors(dataDir) {
       return batches.flatMap(batch => batch.items);
     },
     async send(channel, inquiry) {
+      const configuredSource = channel.config.sources.find(s => s.id === inquiry.source);
+      if (configuredSource?.adapter === NAVER_INQUIRIES) throw new AppError(NAVER_SEND_BLOCKED, 409);
+      if (configuredSource?.readOnly) throw new AppError(READ_ONLY_SEND_BLOCKED, 409);
       if (inquiry.inquiry_kind === 'manual') throw new AppError('직접 등록한 문의는 원문에서 직접 답변하세요.', 409);
       if (inquiry.inquiry_kind === 'notification' || channel.config.sources.find(s => s.id === inquiry.source)?.adapter === FASHIONPLUS_NOTIFICATIONS) throw new AppError(NOTICE_SEND_BLOCKED, 409);
       if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === CAFE24_INQUIRIES) throw new AppError(CAFE24_SEND_BLOCKED, 409);

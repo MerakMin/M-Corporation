@@ -1,7 +1,7 @@
 // User-provided inboxes. URLs are configuration, never evidence of a verified login.
 const naverSources = () => [
-  { name: '상품 Q&A', url: 'https://sell.smartstore.naver.com/#/comment/' },
-  { name: '네이버페이 Q&A', url: 'https://sell.smartstore.naver.com/#/naverpay/qnas' },
+  { name: '상품 Q&A', url: 'https://sell.smartstore.naver.com/#/comment/', adapter: 'naver-inquiries-readonly', enabled: false },
+  { name: '네이버페이 Q&A', url: 'https://sell.smartstore.naver.com/#/naverpay/qnas', adapter: 'naver-inquiries-readonly', enabled: false },
   { name: '고객센터 문의', url: 'https://sell.smartstore.naver.com/#/seller/customer-center-cs' },
   { name: '톡톡 미읽음', url: 'https://sell.smartstore.naver.com/#/talktalk/chat?filter.read=unread' },
 ];
@@ -32,7 +32,7 @@ const presets = [
   { id: 'smartstore_quarter', name: '네이버 쿼터', mark: 'Q', color: '#23886e', requireAccountCheck: true,
     expectedAccount: '쿼터', replyShopName: '쿼터', sources: naverSources() },
   { id: 'naverpay', name: '네이버 페이센터', mark: 'N', color: '#00a76a', sources: [
-    { name: '고객 문의', url: 'https://admin.pay.naver.com/front/m/v2/customer/inquiry' },
+    { name: '고객 문의', url: 'https://admin.pay.naver.com/front/m/v2/customer/inquiry', adapter: 'naver-inquiries-readonly', enabled: false },
   ] },
 ];
 export const CHANNELS = presets.map(({ sources, expectedAccount, replyShopName, ...channel }) => ({ ...channel, sources: sources.map(s => s.name) }));
@@ -43,7 +43,7 @@ export const LEGACY_CHANNELS = [
 export function defaultChannelConfig(id) {
   const p = presets.find(p => p.id === id);
   return {
-    presetVersion: id === 'fashionplus' ? 5 : id === 'coupang' ? 4 : id === 'cafe24' ? 3 : 2,
+    presetVersion: id === 'fashionplus' ? 5 : id === 'coupang' ? 4 : ['cafe24', 'smartstore', 'smartstore_quarter', 'naverpay'].includes(id) ? 3 : 2,
     enabled: false,
     replyShopName: p.replyShopName || '',
     ...(p.expectedAccount ? { accountCheck: { selector: '', expectedText: p.expectedAccount } } : {}),
