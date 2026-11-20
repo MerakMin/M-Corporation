@@ -65,25 +65,39 @@ test('실제 브라우저: 자동 수집 시작 → 원문 읽기·초안 저장
   }
 });
 
-test('준비 상태는 로그인 성공으로 간주하지 않고, 문의함별 실패 후 다음 수집 결과를 보존한다', async () => {
+test('준비 상태는 로그인 성공으로 간주하지 않고, 문의함별 실패 후 다음 수집 결과를 보존한다', async t => {
   const plans = CHANNELS.map(def => automaticCollectionPlan({ config: defaultChannelConfig(def.id) }, def));
-  assert.deepEqual(plans.map(p => p.filter(s => s.ready).length), [2, 1, 0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(plans.map(p => p.filter(s => s.ready).length), [2, 1, 1, 0, 0, 0, 0, 0, 0]);
   const dir = await mkdtemp(join(tmpdir(), 'cs-auto-isolation-'));
   const collectors = createConnectors(dir);
-  const item = { channel: 'coupang', source: 'coupang-1', external_id: '990002', customer: '가상', body: '배송 문의', product: '가상 상품', url: 'https://wing.coupang.com/tenants/cs/product/inquiries', remote_status: 'pending', created_at: '2026-11-10T00:00:00.000Z' };
-  const calls = [];
-  collectors.collect = async channel => { const source = channel.config.sources[0]; calls.push(source.id); if (source.id === 'coupang-0') throw new Error('unavailable'); return [item]; };
+  const reads = [];
+  const remote = http.createServer((req, res) => {
+    if (req.url !== '/favicon.ico') reads.push(req.url);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(req.url === '/unavailable' ? '<main><form id="login"><input></form></main>' : fixture);
+  });
+  const remoteUrl = await listen(remote);
+  t.after(() => new Promise(resolve => remote.close(resolve)));
+  const launch = t.mock.method(chromium, 'launchPersistentContext');
   const app = createApp({ dataDir: dir, scheduler: false, connectors: collectors });
   try {
     const config = app.store.channel('coupang').config; config.enabled = true;
+    Object.assign(config.sources[0], {
+      enabled: true,
+      adapter: undefined,
+      url: `${remoteUrl}/unavailable`,
+      selectors: { login: '#login' },
+    });
+    config.sources[1].url = `${remoteUrl}/tenants/cs/product/inquiries`;
     app.store.db.prepare("UPDATE channels SET config=? WHERE id='coupang'").run(JSON.stringify(config));
     const result = await app.sync();
-    assert.deepEqual(calls, ['coupang-0', 'coupang-1']);
+    assert.deepEqual(reads, ['/unavailable', '/tenants/cs/product/inquiries']);
+    assert.equal(launch.mock.callCount(), 1);
     assert.equal(result.added, 1); assert.equal(result.results[0].ok, false);
     assert.match(result.results[0].error, /고객센터 문의/);
     assert.equal(app.store.db.prepare("SELECT count(*) n FROM inquiries WHERE mode='live'").get().n, 1);
     const base = await listen(app.server);
-    const response = await fetch(`${base}/api/channels/cafe24/automatic`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body: JSON.stringify({ mode: 'live' }) });
-    assert.equal(response.status, 409); assert.equal(app.store.channel('cafe24').config.enabled, false);
+    const response = await fetch(`${base}/api/channels/hiver/automatic`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body: JSON.stringify({ mode: 'live' }) });
+    assert.equal(response.status, 409); assert.equal(app.store.channel('hiver').config.enabled, false);
   } finally { await app.close(); await rm(dir, { recursive: true, force: true }); }
 });

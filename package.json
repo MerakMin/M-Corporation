@@ -10,7 +10,8 @@
     "dev": "node --watch src/server.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:ui": "node scripts/check-ui.js && node scripts/check-manual-ui.js",
-    "login": "node scripts/login.js"
+    "login": "node scripts/login.js",
+    "inspect:inbox": "node scripts/inspect-inbox.js"
   },
   "dependencies": { "playwright": "1.61.1" }
 }

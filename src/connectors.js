@@ -1,3 +1,5 @@
+import { CAFE24_INQUIRIES, CAFE24_SEND_BLOCKED, collectCafe24Inquiries, validateCafe24Source } from './cafe24-inquiries.js';
+import { COUPANG_CENTER, CENTER_SEND_BLOCKED, centerCredentials, collectCoupangCenter, validateCoupangCenterSource } from './coupang-center.js';
 import { chromium } from 'playwright';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -36,8 +38,10 @@ export function validateConfig(config, definition = {}) {
     if (!source.selectors || typeof source.selectors !== 'object' || Array.isArray(source.selectors)) throw new AppError('선택자 설정이 필요합니다.');
     for (const value of Object.values(source.selectors)) if (typeof value !== 'string' || value.length > 500) throw new AppError('선택자는 500자 이하 문자열이어야 합니다.');
     if (source.adapter) {
-      if (source.adapter === FASHIONPLUS_QNA) validateQnaSource(source, definition.id);
+      if (source.adapter === CAFE24_INQUIRIES) validateCafe24Source(source, definition.id);
+      else if (source.adapter === FASHIONPLUS_QNA) validateQnaSource(source, definition.id);
       else if (source.adapter === FASHIONPLUS_NOTIFICATIONS) validateNotificationSource(source, definition.id);
+      else if (source.adapter === COUPANG_CENTER) validateCoupangCenterSource(source, definition.id);
       else if (source.adapter === COUPANG_PRODUCT) validateCoupangProductSource(source, definition.id);
       else throw new AppError('지원하지 않는 전용 수집기입니다.');
     } else if (config.enabled && source.enabled !== false && (!source.url || !['ready', 'row', 'idAttribute', 'body', 'link', 'detailIdentity', 'detailIdAttribute', 'editor', 'submit', 'postedReply'].every(key => source.selectors[key]?.trim()))) throw new AppError('연동을 켜려면 수집할 문의함의 URL과 필수 선택자를 모두 입력하세요.');
@@ -61,6 +65,7 @@ export async function verifyChannelAccount(page, channel) {
 export function automaticCollectionPlan(channel, definition = {}) {
   return channel.config.sources.map(source => {
     try {
+      if (source.adapter === COUPANG_CENTER) centerCredentials();
       if (!source.url) throw new AppError('문의함 주소가 필요합니다.');
       if (!source.adapter && !source.selectors?.ready) throw new AppError('자동 수집 연동 준비 중');
       validateConfig({ ...structuredClone(channel.config), enabled: true, sources: [{ ...structuredClone(source), enabled: true }] }, definition);
@@ -85,6 +90,55 @@ export function createConnectors(dataDir) {
   async function open(page, url, selectors) {
     await page.goto(safeUrl(url), { waitUntil: 'domcontentloaded', timeout: 45000 });
     if (selectors.login && await page.locator(selectors.login).count() && await page.locator(selectors.login).first().isVisible()) throw new AppError('로그인이 필요합니다. 해당 채널의 로그인 세션을 갱신하세요.');
+  }
+  async function collectSource(context, channel, source) {
+    if (source.adapter === CAFE24_INQUIRIES) return collectCafe24Inquiries(context, channel, source, safeUrl);
+    if (source.adapter === FASHIONPLUS_NOTIFICATIONS) return collectFashionplusNotifications(context, channel, source, safeUrl);
+    if (source.adapter === COUPANG_PRODUCT) return collectCoupangProducts(context, channel, source, safeUrl);
+    if (source.adapter === FASHIONPLUS_QNA) return collectFashionplusQna(context, channel, source, safeUrl);
+    const pages = new Set(context.pages());
+    const page = await context.newPage();
+    const inquiries = [];
+    try {
+      const s = source.selectors;
+      await open(page, resolvedSourceUrl(source), s);
+      await verifyChannelAccount(page, channel);
+      await page.locator(s.ready).waitFor({ state: 'visible' });
+      const seen = new Set();
+      let complete = false;
+      for (let pageIndex = 0; pageIndex < (source.maxPages || 20); pageIndex++) {
+        const rows = page.locator(s.row);
+        const count = await rows.count();
+        if (!count && (!s.empty || !await page.locator(s.empty).first().isVisible())) throw new AppError('문의 행을 찾지 못했습니다. row 선택자 또는 빈 목록 표시(empty)를 확인하세요.');
+        let added = 0;
+        for (let index = 0; index < count; index++) {
+          const row = rows.nth(index);
+          const external_id = await row.getAttribute(s.idAttribute);
+          if (!external_id) throw new AppError('문의 고유 ID를 읽지 못했습니다. idAttribute 선택자를 확인하세요.');
+          if (seen.has(external_id)) continue;
+          seen.add(external_id); added++;
+          const text = async key => s[key] ? (await row.locator(s[key]).first().innerText()).trim() : '';
+          const href = await row.locator(s.link).first().getAttribute('href');
+          if (!href) throw new AppError('문의 원문 링크를 읽지 못했습니다.');
+          const detailUrl = safeUrl(new URL(href, page.url()).href);
+          if (new URL(detailUrl).origin !== new URL(page.url()).origin) throw new AppError('문의 상세 링크가 다른 사이트를 가리킵니다. link 선택자를 확인하세요.');
+          const body = await text('body');
+          if (!body) throw new AppError('문의 내용이 비어 있습니다. body 선택자를 확인하세요.');
+          const date = s.date ? await text('date') : null;
+          inquiries.push({ channel: channel.id, source: source.id, external_id, customer: await text('customer'), title: await text('title'), body, product: await text('product'), url: detailUrl, created_at: date && Number.isFinite(Date.parse(date)) ? new Date(date).toISOString() : undefined });
+        }
+        const next = s.next ? page.locator(s.next).first() : null;
+        if (!next || !await next.count() || !await next.isVisible() || !await next.isEnabled() || await next.getAttribute('aria-disabled') === 'true') { complete = true; break; }
+        if (!added) throw new AppError('페이지가 이동하지 않았습니다. next 선택자를 확인하세요.');
+        const before = await rows.first().getAttribute(s.idAttribute);
+        await next.click();
+        await page.waitForFunction(({ row, attr, before }) => document.querySelector(row)?.getAttribute(attr) !== before, { row: s.row, attr: s.idAttribute, before });
+      }
+      if (!complete) throw new AppError('수집 페이지 한도에 도달했습니다. maxPages를 조정하세요. 이번 수집은 저장하지 않았습니다.');
+      return inquiries;
+    } finally {
+      await Promise.all(context.pages().filter(tab => !pages.has(tab)).map(tab => tab.close().catch(() => {})));
+    }
   }
   return {
     async collectProducts(config) {
@@ -142,77 +196,43 @@ export function createConnectors(dataDir) {
         return results;
       });
     },
-    // Isolate every inbox: a failure must not discard successful collections
-    // from other inboxes in the same channel. Reuse the same saved
-    // profile sequentially, closing each context before opening the next.
     async collectSources(channel) {
-      const results = [];
-      for (const source of channel.config.sources.filter(s => s.enabled !== false)) {
-        try { results.push({ source: source.id, items: await this.collect({ ...channel, config: { ...channel.config, sources: [source] } }) }); }
-        catch (error) { results.push({ source: source.id, error: `${source.name}: ${error instanceof AppError ? error.message : '문의 화면을 읽지 못했습니다.'}` }); }
+      const sources = channel.config.sources.filter(source => source.enabled !== false);
+      const read = async (source, collect) => {
+        try { return { source: source.id, items: await collect() }; }
+        catch (error) { return { source: source.id, error: `${source.name}: ${error instanceof AppError ? error.message : '문의 화면을 읽지 못했습니다.'}` }; }
+      };
+      const results = new Map();
+      for (const source of sources.filter(source => source.adapter === COUPANG_CENTER)) {
+        results.set(source.id, await read(source, () => collectCoupangCenter(channel, source)));
       }
-      return results;
+      const browserSources = sources.filter(source => source.adapter !== COUPANG_CENTER);
+      if (browserSources.length) {
+        try {
+          await withChannel(channel, async context => {
+            for (const source of browserSources) {
+              results.set(source.id, await read(source, () => collectSource(context, channel, source)));
+            }
+          });
+        } catch (error) {
+          for (const source of browserSources) {
+            if (!results.has(source.id)) results.set(source.id, await read(source, () => { throw error; }));
+          }
+        }
+      }
+      return sources.map(source => results.get(source.id));
     },
     async collect(channel) {
-      return withChannel(channel, async context => {
-        const page = await context.newPage();
-        const inquiries = [];
-        for (const source of channel.config.sources) {
-          if (source.enabled === false) continue;
-          if (source.adapter === FASHIONPLUS_NOTIFICATIONS) {
-            inquiries.push(...await collectFashionplusNotifications(context, channel, source, safeUrl));
-            continue;
-          }
-          if (source.adapter === COUPANG_PRODUCT) {
-            inquiries.push(...await collectCoupangProducts(context, channel, source, safeUrl));
-            continue;
-          }
-          if (source.adapter === FASHIONPLUS_QNA) {
-            inquiries.push(...await collectFashionplusQna(context, channel, source, safeUrl));
-            continue;
-          }
-          const s = source.selectors;
-          await open(page, resolvedSourceUrl(source), s);
-          await verifyChannelAccount(page, channel);
-          await page.locator(s.ready).waitFor({ state: 'visible' });
-          const seen = new Set();
-          let complete = false;
-          for (let pageIndex = 0; pageIndex < (source.maxPages || 20); pageIndex++) {
-            const rows = page.locator(s.row);
-            const count = await rows.count();
-            if (!count && (!s.empty || !await page.locator(s.empty).first().isVisible())) throw new AppError('문의 행을 찾지 못했습니다. row 선택자 또는 빈 목록 표시(empty)를 확인하세요.');
-            let added = 0;
-            for (let index = 0; index < count; index++) {
-              const row = rows.nth(index);
-              const external_id = await row.getAttribute(s.idAttribute);
-              if (!external_id) throw new AppError('문의 고유 ID를 읽지 못했습니다. idAttribute 선택자를 확인하세요.');
-              if (seen.has(external_id)) continue;
-              seen.add(external_id); added++;
-              const text = async key => s[key] ? (await row.locator(s[key]).first().innerText()).trim() : '';
-              const href = await row.locator(s.link).first().getAttribute('href');
-              if (!href) throw new AppError('문의 원문 링크를 읽지 못했습니다.');
-              const detailUrl = safeUrl(new URL(href, page.url()).href);
-              if (new URL(detailUrl).origin !== new URL(page.url()).origin) throw new AppError('문의 상세 링크가 다른 사이트를 가리킵니다. link 선택자를 확인하세요.');
-              const body = await text('body');
-              if (!body) throw new AppError('문의 내용이 비어 있습니다. body 선택자를 확인하세요.');
-              const date = s.date ? await text('date') : null;
-              inquiries.push({ channel: channel.id, source: source.id, external_id, customer: await text('customer'), title: await text('title'), body, product: await text('product'), url: detailUrl, created_at: date && Number.isFinite(Date.parse(date)) ? new Date(date).toISOString() : undefined });
-            }
-            const next = s.next ? page.locator(s.next).first() : null;
-            if (!next || !await next.count() || !await next.isVisible() || !await next.isEnabled() || await next.getAttribute('aria-disabled') === 'true') { complete = true; break; }
-            if (!added) throw new AppError('페이지가 이동하지 않았습니다. next 선택자를 확인하세요.');
-            const before = await rows.first().getAttribute(s.idAttribute);
-            await next.click();
-            await page.waitForFunction(({ row, attr, before }) => document.querySelector(row)?.getAttribute(attr) !== before, { row: s.row, attr: s.idAttribute, before });
-          }
-          if (!complete) throw new AppError('수집 페이지 한도에 도달했습니다. maxPages를 조정하세요. 이번 수집은 저장하지 않았습니다.');
-        }
-        return inquiries;
-      });
+      const batches = await this.collectSources(channel);
+      const failed = batches.find(batch => batch.error);
+      if (failed) throw new AppError(failed.error);
+      return batches.flatMap(batch => batch.items);
     },
     async send(channel, inquiry) {
       if (inquiry.inquiry_kind === 'manual') throw new AppError('직접 등록한 문의는 원문에서 직접 답변하세요.', 409);
       if (inquiry.inquiry_kind === 'notification' || channel.config.sources.find(s => s.id === inquiry.source)?.adapter === FASHIONPLUS_NOTIFICATIONS) throw new AppError(NOTICE_SEND_BLOCKED, 409);
+      if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === CAFE24_INQUIRIES) throw new AppError(CAFE24_SEND_BLOCKED, 409);
+      if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === COUPANG_CENTER) throw new AppError(CENTER_SEND_BLOCKED, 409);
       if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === COUPANG_PRODUCT) throw new AppError(COUPANG_SEND_BLOCKED, 409);
       if (channel.config.sources.find(s => s.id === inquiry.source)?.adapter === FASHIONPLUS_QNA) throw new AppError(QNA_SEND_BLOCKED, 409);
       return withChannel(channel, async context => {

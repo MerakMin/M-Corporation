@@ -92,6 +92,26 @@ export function openStore(dataDir) {
       previous.presetVersion = 3;
       db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
     }
+    if (channel.id === 'coupang' && previous.presetVersion >= 2 && previous.presetVersion < 4) {
+      const preset = defaults.sources.find(s => s.id === 'coupang-0');
+      const source = previous.sources.find(s => s.id === preset.id);
+      if (source && source.url === preset.url && !source.adapter && !Object.values(source.selectors || {}).some(value => value?.trim())) {
+        source.adapter = preset.adapter;
+        source.enabled = false;
+      }
+      previous.presetVersion = 4;
+      db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
+    }
+    if (channel.id === 'cafe24' && previous.presetVersion === 2) {
+      const preset = defaults.sources[0];
+      const source = previous.sources.find(s => s.id === preset.id);
+      if (source && source.url === preset.url && !source.adapter && !Object.values(source.selectors || {}).some(value => value?.trim())) {
+        source.adapter = preset.adapter;
+        source.enabled = false;
+      }
+      previous.presetVersion = 3;
+      db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(previous), channel.id);
+    }
     if (previous.presetVersion >= 2) continue;
     const sources = previous.sources.map(source => {
       const preset = defaults.sources.find(s => s.id === source.id);

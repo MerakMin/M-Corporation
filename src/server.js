@@ -1,3 +1,5 @@
+import { CAFE24_INQUIRIES, CAFE24_SEND_BLOCKED } from './cafe24-inquiries.js';
+import { COUPANG_CENTER, CENTER_SEND_BLOCKED } from './coupang-center.js';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
@@ -37,6 +39,8 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
     if (row.inquiry_kind === 'manual') return '직접 등록한 문의입니다. 초안을 복사해 원문에서 답변하고 완료 표시를 해 주세요. 자동 수집·전송 대상에는 포함되지 않습니다.';
     const adapter = store.channel(row.channel)?.config.sources.find(s => s.id === row.source)?.adapter;
     if (row.inquiry_kind === 'notification' || adapter === FASHIONPLUS_NOTIFICATIONS) return NOTICE_SEND_BLOCKED;
+    if (adapter === CAFE24_INQUIRIES) return CAFE24_SEND_BLOCKED;
+    if (adapter === COUPANG_CENTER) return CENTER_SEND_BLOCKED;
     return adapter === FASHIONPLUS_QNA ? QNA_SEND_BLOCKED : adapter === COUPANG_PRODUCT ? COUPANG_SEND_BLOCKED : null;
   };
   const publicInquiry = row => ({ ...row, missing: missingFields(row.draft), sendBlockedReason: sendBlockedReason(row) });
@@ -67,17 +71,20 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
         // Check saved detail URLs first, independently of the pending list.
         // A later list failure must not discard already verified completions.
         const sources = new Set(channel.config.sources.filter(s => s.enabled !== false && [FASHIONPLUS_QNA, FASHIONPLUS_NOTIFICATIONS].includes(s.adapter)).map(s => s.id));
-        const targets = db.prepare("SELECT * FROM inquiries WHERE mode='live' AND channel=? AND status IN ('pending','failed') AND inquiry_kind<>'manual' ORDER BY collected_at").all(def.id).filter(row => sources.has(row.source));
+        const targets = sources.size
+          ? db.prepare("SELECT * FROM inquiries WHERE mode='live' AND channel=? AND status IN ('pending','failed') AND inquiry_kind<>'manual' ORDER BY collected_at")
+            .all(def.id).filter(row => sources.has(row.source))
+          : [];
         if (targets.length) {
           try {
             if (!browser.checkCompletions) throw new AppError('완료 상태 확인 기능을 사용할 수 없습니다.');
             const checks = await browser.checkCompletions(channel, targets);
-            const ids = new Set(targets.map(row => row.id));
-            if (!Array.isArray(checks) || checks.length !== targets.length || new Set(checks.map(result => result.id)).size !== targets.length || checks.some(result => !ids.has(result.id))) throw new AppError('완료 확인 결과와 대상 문의가 일치하지 않습니다.');
+            const targetsById = new Map(targets.map(row => [row.id, row]));
+            if (!Array.isArray(checks) || checks.length !== targets.length || new Set(checks.map(result => result.id)).size !== targets.length || checks.some(result => !targetsById.has(result.id))) throw new AppError('완료 확인 결과와 대상 문의가 일치하지 않습니다.');
             db.exec('BEGIN');
             try {
               for (const result of checks) {
-                const target = targets.find(row => row.id === result.id);
+                const target = targetsById.get(result.id);
                 if (result.error) {
                   completionErrors.push(result.error);
                   store.event('live', target.id, 'remote_status_failed', result.error);
