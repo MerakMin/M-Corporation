@@ -1,28 +1,45 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { basename } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { AppError } from './domain.js';
 
-async function readEndpoint(file) {
-  try { return await readFile(file, 'utf8'); }
-  catch (error) { if (error.code === 'ENOENT') return ''; throw error; }
+async function availableLocalPort() {
+  const socket = createServer();
+  await new Promise((resolve, reject) => {
+    socket.once('error', reject);
+    socket.listen(0, '127.0.0.1', resolve);
+  });
+  const { port } = socket.address();
+  await new Promise((resolve, reject) => socket.close(error => error ? reject(error) : resolve()));
+  return port;
+}
+
+async function localBrowserEndpoint(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      redirect: 'error', signal: AbortSignal.timeout(350),
+    });
+    if (!response.ok) return;
+    const { webSocketDebuggerUrl } = await response.json();
+    const url = new URL(webSocketDebuggerUrl);
+    if (url.protocol === 'ws:' && url.hostname === '127.0.0.1' && Number(url.port) === port
+        && /^\/devtools\/browser\/[a-f0-9-]+$/i.test(url.pathname) && !url.search && !url.hash) return url.href;
+  } catch { /* The browser may still be starting. */ }
 }
 
 export async function launchViaLocalDebugPort(profile, options) {
   const failure = reason => new AppError(`웨일 연결 실패: ${reason}`);
-  const marker = join(profile, 'DevToolsActivePort');
-  let previous;
-  try {
-    await mkdir(profile, { recursive: true });
-    previous = await readEndpoint(marker);
-  } catch {
-    throw failure('채널 프로필 폴더를 읽을 수 없습니다.');
-  }
+  try { await mkdir(profile, { recursive: true }); }
+  catch { throw failure('채널 프로필 폴더를 열 수 없습니다.'); }
+  let port;
+  try { port = await availableLocalPort(); }
+  catch { throw failure('PC 내부의 자동 수집 연결 포트를 열 수 없습니다.'); }
   const args = [
     `--user-data-dir=${profile}`, '--remote-debugging-address=127.0.0.1',
-    '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check',
+    `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check',
     `--lang=${options.locale}`, 'about:blank',
   ];
   if (options.headless) args.unshift('--headless=new');
@@ -43,14 +60,10 @@ export async function launchViaLocalDebugPort(profile, options) {
   };
   try {
     let endpoint;
-    for (let i = 0; i < 200 && !exited; i++) {
-      const current = await readEndpoint(marker);
-      const [port, path] = current.trim().split(/\r?\n/);
-      if (!exited && current !== previous && /^\d+$/.test(port) && Number(port) > 0 && Number(port) <= 65535
-          && /^\/devtools\/browser\/[a-f0-9-]+$/i.test(path || '')) {
-        endpoint = `ws://127.0.0.1:${port}${path}`;
-        break;
-      }
+    const deadline = Date.now() + 20000;
+    while (!exited && Date.now() < deadline) {
+      endpoint = await localBrowserEndpoint(port);
+      if (endpoint) break;
       await delay(100);
     }
     if (launchError) throw failure('웨일 실행 파일을 열 수 없습니다.');
