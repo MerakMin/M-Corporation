@@ -69,17 +69,17 @@ async function readList(page, url) {
       indexes[label] = matches[0].cellIndex;
     }
     const rows = [...element.rows].slice(header.rowIndex + 1).filter(row => row.getClientRects().length);
-    return rows.map(row => ({
+    return rows.filter(row => clean(row.innerText)).map(row => ({
       index: row.rowIndex,
-      empty: row.cells.length === 1 && clean(row.cells[0].innerText) === '검색 결과가 없습니다.',
+      empty: clean(row.innerText) === '검색 결과가 없습니다.',
       fields: Object.fromEntries(required.map(label => [label, clean(row.cells[indexes[label]]?.innerText || '')])),
     }));
   }, headers);
   if (!Number.isSafeInteger(total) || total < 0 || !structure) throw new AppError('카페24 게시물 목록 구조를 확인하세요.');
   if (total === 0 && structure.length === 1 && structure[0].empty
-      && await table.getByText(emptyText, { exact: true }).filter({ visible: true }).count() === 1) return { table, rows: [] };
-  if (total === 0 || structure.length !== total || structure.some(row => row.empty)) {
-    throw new AppError('카페24 검색 건수와 현재 페이지가 다릅니다. 한 페이지에 모든 결과를 표시해 주세요.');
+      && await table.getByText(emptyText, { exact: true }).filter({ visible: true }).count() === 1) return { table, rows: [], ids: [], total };
+  if (total === 0 || !structure.length || structure.length > total || structure.some(row => row.empty)) {
+    throw new AppError(`카페24 검색 건수(${total})와 현재 페이지 행 수(${structure.length})가 일치하지 않습니다.`);
   }
   const ids = new Set();
   const rows = [];
@@ -94,7 +94,7 @@ async function readList(page, url) {
     }
     rows.push({ index, id, title, customer });
   }
-  return { table, rows };
+  return { table, rows, ids: [...ids], total };
 }
 
 async function readPreview(page, row, table, url) {
@@ -137,22 +137,38 @@ export async function collectCafe24Inquiries(context, channel, source, safeUrl) 
   const startupPage = context.pages().find(page => page.url() === 'about:blank');
   const page = startupPage || await context.newPage();
   try {
-    const open = () => openCafe24InquiryPage(page, url);
-    const list = await open();
     const items = [];
-    for (const [index, row] of list.rows.entries()) {
-      let table = list.table;
-      let current = row;
-      if (index) {
-        const refreshed = await open();
-        table = refreshed.table;
-        current = refreshed.rows.find(item => item.id === row.id && item.title === row.title && item.customer === row.customer);
-        if (!current) throw new AppError('카페24 목록이 수집 중 변경됐습니다. 다시 수집해 주세요.');
+    const seen = new Set();
+    const maxPages = source.maxPages || 20;
+    let expectedTotal;
+    for (let number = 1; number <= maxPages; number++) {
+      const pageUrl = new URL(url);
+      if (number > 1 || pageUrl.searchParams.has('page')) pageUrl.searchParams.set('page', String(number));
+      const open = () => openCafe24InquiryPage(page, pageUrl.href);
+      const list = await open();
+      expectedTotal ??= list.total;
+      if (list.total !== expectedTotal || list.ids.some(id => seen.has(id)) || seen.size + list.ids.length > expectedTotal) {
+        throw new AppError(`카페24 검색 건수(${expectedTotal})를 대조할 수 없습니다. ${number}페이지에서 건수가 변경됐거나 같은 게시물이 반복됐습니다.`);
       }
-      const body = await readPreview(page, current, table, url);
-      items.push({ channel: channel.id, source: source.id, external_id: row.id, title: row.title, customer: row.customer, body, url });
+      for (const id of list.ids) seen.add(id);
+      for (const [index, row] of list.rows.entries()) {
+        let table = list.table;
+        let current = row;
+        if (index) {
+          const refreshed = await open();
+          if (refreshed.total !== expectedTotal || refreshed.ids.join(',') !== list.ids.join(',')) {
+            throw new AppError('카페24 목록이 수집 중 변경됐습니다. 다시 수집해 주세요.');
+          }
+          table = refreshed.table;
+          current = refreshed.rows.find(item => item.id === row.id && item.title === row.title && item.customer === row.customer);
+          if (!current) throw new AppError('카페24 목록이 수집 중 변경됐습니다. 다시 수집해 주세요.');
+        }
+        const body = await readPreview(page, current, table, pageUrl.href);
+        items.push({ channel: channel.id, source: source.id, external_id: row.id, title: row.title, customer: row.customer, body, url });
+      }
+      if (seen.size === expectedTotal) return items;
     }
-    return items;
+    throw new AppError(`카페24 검색 결과 ${expectedTotal}건 중 ${seen.size}건을 확인했습니다. 연결 설정에서 최대 수집 페이지를 늘려 주세요.`);
   } finally {
     await page.close();
   }
