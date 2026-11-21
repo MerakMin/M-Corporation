@@ -1,3 +1,4 @@
+import { launchPersistentBrowser } from './persistent-browser.js';
 import { NAVER_INQUIRIES, NAVER_SEND_BLOCKED, createNaverCollector, naverCredentials, validateNaverSource } from './naver-inquiries.js';
 import { CAFE24_INQUIRIES, CAFE24_SEND_BLOCKED, collectCafe24Inquiries, validateCafe24Source } from './cafe24-inquiries.js';
 import { COUPANG_CENTER, CENTER_SEND_BLOCKED, centerCredentials, collectCoupangCenter, validateCoupangCenterSource } from './coupang-center.js';
@@ -102,7 +103,7 @@ export function createConnectors(dataDir) {
     busy.add(channel.id);
     let context;
     try {
-      context = await chromium.launchPersistentContext(join(dataDir, 'profiles', channel.id), browserOptions());
+      context = await launchPersistentBrowser(join(dataDir, 'profiles', channel.id), browserOptions());
       context.setDefaultTimeout(12000);
       return await fn(context);
     } finally { await context?.close().catch(() => {}); busy.delete(channel.id); }

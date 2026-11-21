@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { launchPersistentBrowser } from '../src/persistent-browser.js';
 import { createInterface } from 'node:readline/promises';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -17,7 +17,7 @@ async function main() {
   console.log('서버와 이전 로그인 브라우저를 종료한 상태에서 실행하세요.');
   console.log(notifications ? '진단 대상: CS알리미' : '진단 대상: 고객문의 게시판');
   console.log('이 도구는 답변을 입력하거나 전송하지 않습니다. 고객 내용·입력값·쿠키·URL은 보고서에 저장하지 않습니다.');
-  const context = await chromium.launchPersistentContext(join(dataDir, 'profiles', 'fashionplus'), browserOptions(false));
+  const context = await launchPersistentBrowser(join(dataDir, 'profiles', 'fashionplus'), browserOptions(false));
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const page = await context.newPage();
