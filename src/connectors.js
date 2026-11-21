@@ -1,10 +1,10 @@
-import { launchPersistentBrowser } from './persistent-browser.js';
+import { launchChannelBrowser } from './persistent-browser.js';
 import { NAVER_INQUIRIES, NAVER_SEND_BLOCKED, createNaverCollector, naverCredentials, validateNaverSource } from './naver-inquiries.js';
 import { CAFE24_INQUIRIES, CAFE24_SEND_BLOCKED, collectCafe24Inquiries, validateCafe24Source } from './cafe24-inquiries.js';
 import { COUPANG_CENTER, CENTER_SEND_BLOCKED, centerCredentials, collectCoupangCenter, validateCoupangCenterSource } from './coupang-center.js';
 import { chromium } from 'playwright';
 import { existsSync } from 'node:fs';
-import { join, win32 } from 'node:path';
+import { win32 } from 'node:path';
 import { AppError, normalizeText } from './domain.js';
 import { CHANNELS, resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED, collectFashionplusQna, checkFashionplusCompletion, validateQnaSource } from './fashionplus-qna.js';
@@ -103,7 +103,7 @@ export function createConnectors(dataDir) {
     busy.add(channel.id);
     let context;
     try {
-      context = await launchPersistentBrowser(join(dataDir, 'profiles', channel.id), browserOptions());
+      ({ context } = await launchChannelBrowser(dataDir, channel.id, browserOptions()));
       context.setDefaultTimeout(12000);
       return await fn(context);
     } finally { await context?.close().catch(() => {}); busy.delete(channel.id); }

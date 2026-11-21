@@ -6,14 +6,17 @@ if not exist "%~dp0scripts\windows-env.cmd" (
 )
 call "%~dp0scripts\windows-env.cmd"
 if errorlevel 1 goto failed
-if not exist "node_modules\playwright\package.json" (
-  echo Run 01-install.cmd first.
-  goto failed
+node -e "require.resolve('playwright'); require.resolve('bcryptjs')" >nul 2>&1
+if errorlevel 1 (
+  echo Installing missing CS Desk dependencies...
+  call npm ci
+  if errorlevel 1 goto failed
+  call npx --no-install playwright install chromium
+  if errorlevel 1 goto failed
 )
-echo Open the address shown below in Whale.
-echo Keep this window open while using the application. Press Ctrl+C to stop.
 node %MCORP_NODE_ENV_FILE% src/server.js
 if errorlevel 1 goto failed
+pause
 exit /b 0
 :failed
 echo.

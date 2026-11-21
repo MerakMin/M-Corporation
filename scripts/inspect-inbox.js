@@ -1,4 +1,4 @@
-import { launchPersistentBrowser } from '../src/persistent-browser.js';
+import { launchChannelBrowser } from '../src/persistent-browser.js';
 import { createInterface } from 'node:readline/promises';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -36,7 +36,7 @@ async function main() {
     if (origin !== new URL(target.source.url).origin) throw new Error('등록된 플랫폼 주소를 확인하세요.');
     console.log(`${target.channel.name} / ${source.name}`);
     console.log('서버와 기존 로그인 브라우저를 먼저 종료하세요. 보고서는 화면 구조만 저장합니다.');
-    context = await launchPersistentBrowser(join(dataDir, 'profiles', target.channel.id), browserOptions(false));
+    ({ context } = await launchChannelBrowser(dataDir, target.channel.id, browserOptions(false)));
     const page = await context.newPage();
     await page.goto(inbox, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await terminal.question('브라우저에서 로그인하고 선택한 문의함을 연 뒤 Enter를 누르세요.\n');

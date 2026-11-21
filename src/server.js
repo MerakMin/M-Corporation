@@ -16,10 +16,11 @@ import { FASHIONPLUS_NOTIFICATIONS, NOTICE_SEND_BLOCKED } from './fashionplus-no
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INTERVAL = 10 * 60 * 1000;
+const APP_NAME = 'm-corporation-cs-desk';
 const modeOf = value => { if (!['live', 'demo'].includes(value)) throw new AppError('작업 모드를 확인하세요.'); return value; };
 const string = (value, label, max = 10000) => { if (typeof value !== 'string' || !value.trim() || value.length > max) throw new AppError(`${label}을(를) 확인하세요. (최대 ${max}자)`); return value.trim(); };
 
-export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.data'), connectors, scheduler = true } = {}) {
+export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.data'), connectors, scheduler = true, server = http.createServer() } = {}) {
   const store = openStore(resolve(dataDir));
   const { db } = store;
   const browser = connectors || createConnectors(resolve(dataDir));
@@ -138,7 +139,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
   }
   armTimer();
   async function route(method, path, query, body) {
-    if (method === 'GET' && path === '/api/health') return { ok: true };
+    if (method === 'GET' && path === '/api/health') return { ok: true, app: APP_NAME };
     if (method === 'GET' && path === '/api/state') {
       const mode = modeOf(query.get('mode') || 'demo');
       return {
@@ -306,7 +307,7 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
     }
     throw new AppError('요청한 경로를 찾을 수 없습니다.', 404);
   }
-  const server = http.createServer(async (req, res) => {
+  server.on('request', async (req, res) => {
     const headers = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
     try {
       const expectedHost = `127.0.0.1:${server.address()?.port}`;
@@ -340,18 +341,79 @@ export function createApp({ dataDir = process.env.CS_DATA_DIR || join(root, '.da
       res.end(JSON.stringify({ error: error instanceof AppError ? error.message : '서버 오류가 발생했습니다. 서버 로그를 확인하세요.' }));
     }
   });
-  server.once('listening', () => {
+  const collectOnStartup = () => {
     if (!scheduler || shuttingDown) return;
     clearTimeout(timer);
     sync('live').catch(error => console.error('Startup collection failed:', error.message));
-  });
+  };
+  if (server.listening) collectOnStartup();
+  else server.once('listening', collectOnStartup);
   return { server, store, sync, async close() { shuttingDown = true; clearTimeout(timer); await new Promise(resolve => server.listening ? server.close(resolve) : resolve()); await syncFinished; store.close(); } };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const app = createApp();
-  const port = Number(process.env.PORT || 3000);
-  app.server.listen(port, '127.0.0.1', () => console.log(`M-Corporation CS Desk: http://127.0.0.1:${port}`));
-  const stop = async () => { await app.close(); process.exit(0); };
-  process.on('SIGINT', stop); process.on('SIGTERM', stop);
+export async function isExistingDesk(address) {
+  try {
+    const response = await fetch(`${address}/api/health`, { redirect: 'error', signal: AbortSignal.timeout(1500) });
+    if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) return false;
+    const health = await response.json();
+    if (health?.ok !== true) return false;
+    if (health.app === APP_NAME) return true;
+    if (health.app !== undefined) return false;
+    // Earlier CS Desk releases used an unbranded health endpoint.
+    const home = await fetch(address, { redirect: 'error', signal: AbortSignal.timeout(1500) });
+    return home.ok && /<title>M-Corporation · CS 데스크<\/title>/i.test(await home.text());
+  } catch { return false; }
 }
+
+async function main() {
+  const port = Number(process.env.PORT || 3000);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error('PORT는 1~65535 사이의 포트 번호여야 합니다.');
+    process.exitCode = 1;
+    return;
+  }
+  const address = `http://127.0.0.1:${port}`;
+  const server = http.createServer();
+  try {
+    // Acquire the port before opening the database or starting the scheduler.
+    await new Promise((resolve, reject) => {
+      const onError = error => reject(error);
+      server.once('error', onError);
+      server.listen(port, '127.0.0.1', () => {
+        server.off('error', onError);
+        resolve();
+      });
+    });
+  } catch (error) {
+    if (error.code === 'EADDRINUSE' && await isExistingDesk(address)) {
+      console.log(`CS Desk가 이미 실행 중입니다: ${address}\n이 주소에서 기존 화면을 사용하세요. 업데이트 버전을 시작하려면 기존 서버 프로세스를 먼저 종료하세요.`);
+      return;
+    }
+    console.error(error.code === 'EADDRINUSE'
+      ? `포트 ${port}을(를) 다른 프로세스가 사용 중입니다. 작업 관리자에서 점유 프로그램을 확인하세요. 다른 앱이면 .env에서 PORT를 변경할 수 있습니다.`
+      : 'CS Desk 포트를 열 수 없습니다. 포트 번호와 Windows의 사용 권한을 확인하세요.');
+    process.exitCode = 1;
+    return;
+  }
+  let app;
+  try {
+    app = createApp({ server });
+  } catch {
+    await new Promise(resolve => server.close(resolve));
+    console.error('CS Desk 데이터 폴더를 열지 못했습니다. 프로젝트 폴더의 쓰기 권한과 .data 접근 상태를 확인하세요.');
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`M-Corporation CS Desk: ${address}`);
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    await app.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

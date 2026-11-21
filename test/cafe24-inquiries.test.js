@@ -16,6 +16,11 @@ test('카페24 자동 수집은 실제 Chromium에서 0건을 인식하고 미�
   let writes = 0;
   const remote = http.createServer((req, res) => {
     if (req.method !== 'GET') writes++;
+    if (state === 'bad-address' || state === 'login') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(state === 'login' ? '<input type="password">' : '<h1>다시 한번 확인해주세요!</h1>');
+      return;
+    }
     const full = [renderRow(3, '배송 문의', '답변 전', '가상 고객'), renderRow(2, '완료 글', '답변완료', '가상 고객'), renderRow(1, '[답변] 안내', '-', '운영자')].join('');
     const empty = state === 'empty' || state === 'wrong-filter';
     const count = empty ? 0 : state === 'partial' ? 4 : 3;
@@ -46,6 +51,10 @@ test('카페24 자동 수집은 실제 Chromium에서 0건을 인식하고 미�
     });
     assert.equal(automatic.status, 200);
     assert.equal((await automatic.json()).results[0].ok, true);
+    state = 'login';
+    assert.match((await app.sync()).results[0].error, /관리자 로그인이 필요/);
+    state = 'bad-address';
+    assert.match((await app.sync()).results[0].error, /문의 주소를 열 수 없습니다/);
     state = 'wrong-filter';
     assert.match((await app.sync()).results[0].error, /필터/);
     state = 'partial';

@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { AppError } from './domain.js';
@@ -83,9 +84,45 @@ export async function launchViaLocalDebugPort(profile, options) {
   }
 }
 
-export function launchPersistentBrowser(profile, options) {
-  if (process.platform === 'win32' && basename(options.executablePath || '').toLowerCase() === 'whale.exe') {
+function usesWhale(options) {
+  return process.platform === 'win32' && basename(options.executablePath || '').toLowerCase() === 'whale.exe';
+}
+
+function launchPersistentBrowser(profile, options) {
+  if (usesWhale(options)) {
     return launchViaLocalDebugPort(profile, { ...options, headless: false });
   }
   return chromium.launchPersistentContext(profile, options);
+}
+
+export async function launchChannelBrowser(dataDir, channelId, options, { login = false } = {}) {
+  const profile = join(dataDir, 'profiles', channelId);
+  const fallbackProfile = join(dataDir, 'profiles-chromium', channelId);
+  const fallbackFlag = join(dataDir, 'profiles-chromium', `${channelId}.selected`);
+  const whale = usesWhale(options);
+  const useFallback = process.platform === 'win32' && (whale || !options.executablePath) && existsSync(fallbackFlag);
+  const chromiumOptions = { ...options, executablePath: undefined };
+  const launchFallback = async () => {
+    try { return await launchPersistentBrowser(fallbackProfile, chromiumOptions); }
+    catch { throw new AppError('대체 Chromium 브라우저를 열지 못했습니다. 01-install.cmd로 브라우저 설치를 확인하세요.'); }
+  };
+  if (useFallback) return { context: await launchFallback(), name: 'Playwright Chromium' };
+  try {
+    return {
+      context: await launchPersistentBrowser(profile, options),
+      name: options.executablePath ? basename(options.executablePath) : 'Playwright Chromium',
+    };
+  } catch (error) {
+    if (!whale) throw error;
+    if (!login) throw new AppError(`${error.message} 03-login.cmd를 실행하면 이 채널의 대체 브라우저로 로그인할 수 있습니다.`);
+    console.log('웨일 자동 연결에 실패해 이 채널의 독립 Chromium 로그인 창을 엽니다.');
+    const context = await launchFallback();
+    try {
+      await writeFile(fallbackFlag, 'chromium', { mode: 0o600 });
+    } catch {
+      await context.close().catch(() => {});
+      throw new AppError('대체 브라우저 선택을 저장할 수 없습니다. .data 폴더 쓰기 권한을 확인하세요.');
+    }
+    return { context, name: 'Playwright Chromium' };
+  }
 }

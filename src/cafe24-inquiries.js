@@ -21,6 +21,19 @@ export function validateCafe24Source(source, channelId) {
 
 function text(value) { return normalizeText(value || ''); }
 
+export async function openCafe24InquiryPage(page, url) {
+  let response;
+  try { response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }); }
+  catch { throw new AppError('카페24 문의 주소에 연결하지 못했습니다. 카페24 관리자에서 문의 페이지가 열리는지 확인하세요.'); }
+  if (response?.status() === 401 || await page.locator('input[type="password"]:visible').count() || new URL(page.url()).hostname === 'eclogin.cafe24.com') {
+    throw new AppError('카페24 관리자 로그인이 필요합니다. 03-login.cmd에서 카페24를 선택해 다시 로그인하세요.');
+  }
+  if ((response && response.status() >= 400) || await page.getByText(/다시\s*한번\s*확인해\s*주세요[!.]?/).first().isVisible()) {
+    throw new AppError('카페24에서 등록된 문의 주소를 열 수 없습니다. 관리자에서 상품 문의 게시판이 열리는 주소를 확인하세요.');
+  }
+  return readList(page, url);
+}
+
 async function readList(page, url) {
   const actual = new URL(page.url());
   const expected = new URL(url);
@@ -29,9 +42,10 @@ async function readList(page, url) {
       || await page.locator('input[type="password"]:visible').count()) {
     throw new AppError('카페24 로그인과 미답변 상품 문의 화면을 확인하세요.');
   }
-  const table = page.locator('table:visible').filter({ has: page.getByRole('columnheader', { name: '미리보기', exact: true }) })
-    .filter({ has: page.getByRole('columnheader', { name: '답변상태', exact: true }) });
-  await table.first().waitFor({ state: 'visible' });
+  const table = page.locator('table:visible').filter({ has: page.locator('th, td').filter({ hasText: /^\s*미리보기\s*$/ }).filter({ visible: true }) })
+    .filter({ has: page.locator('th, td').filter({ hasText: /^\s*답변상태\s*$/ }).filter({ visible: true }) });
+  try { await table.first().waitFor({ state: 'visible', timeout: 12000 }); }
+  catch { throw new AppError('카페24 문의 주소는 열렸지만 상품 문의 목록을 찾지 못했습니다. 06-inspect-inbox.cmd에서 카페24 화면 구조를 확인하세요.'); }
   if (await table.count() !== 1) throw new AppError('카페24 게시물 목록을 하나로 식별할 수 없습니다.');
   const filter = page.getByRole('radio', { name: '답변 전', exact: true });
   const fallback = page.locator('input[type="radio"][name="is_reply"][value="N"]:checked:visible');
@@ -120,18 +134,17 @@ async function readPreview(page, row, table, url) {
 export async function collectCafe24Inquiries(context, channel, source, safeUrl) {
   validateCafe24Source(source, channel.id);
   const url = safeUrl(resolvedSourceUrl(source));
-  const page = await context.newPage();
+  const startupPage = context.pages().find(page => page.url() === 'about:blank');
+  const page = startupPage || await context.newPage();
   try {
-    const open = () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await open();
-    const list = await readList(page, url);
+    const open = () => openCafe24InquiryPage(page, url);
+    const list = await open();
     const items = [];
     for (const [index, row] of list.rows.entries()) {
       let table = list.table;
       let current = row;
       if (index) {
-        await open();
-        const refreshed = await readList(page, url);
+        const refreshed = await open();
         table = refreshed.table;
         current = refreshed.rows.find(item => item.id === row.id && item.title === row.title && item.customer === row.customer);
         if (!current) throw new AppError('카페24 목록이 수집 중 변경됐습니다. 다시 수집해 주세요.');
