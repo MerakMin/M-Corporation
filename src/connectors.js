@@ -3,16 +3,26 @@ import { CAFE24_INQUIRIES, CAFE24_SEND_BLOCKED, collectCafe24Inquiries, validate
 import { COUPANG_CENTER, CENTER_SEND_BLOCKED, centerCredentials, collectCoupangCenter, validateCoupangCenterSource } from './coupang-center.js';
 import { chromium } from 'playwright';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { AppError, normalizeText } from './domain.js';
 import { CHANNELS, resolvedSourceUrl } from './channel-presets.js';
 import { FASHIONPLUS_QNA, QNA_SEND_BLOCKED, collectFashionplusQna, checkFashionplusCompletion, validateQnaSource } from './fashionplus-qna.js';
 import { COUPANG_PRODUCT, COUPANG_SEND_BLOCKED, collectCoupangProducts, validateCoupangProductSource } from './coupang-product.js';
 import { FASHIONPLUS_NOTIFICATIONS, NOTICE_SEND_BLOCKED, collectFashionplusNotifications, checkNotificationCompletion, validateNotificationSource } from './fashionplus-notifications.js';
 
+export function browserExecutable({ platform = process.platform, env = process.env, fileExists = existsSync } = {}) {
+  if (env.CS_CHROMIUM_PATH) return env.CS_CHROMIUM_PATH;
+  if (platform === 'win32') {
+    const folders = [env.LOCALAPPDATA, env.ProgramW6432, env.ProgramFiles, env['ProgramFiles(x86)']];
+    return folders.filter(Boolean)
+      .map(folder => win32.join(folder, 'Naver', 'Naver Whale', 'Application', 'whale.exe'))
+      .find(file => fileExists(file));
+  }
+  if (platform === 'linux' && fileExists('/usr/bin/chromium')) return '/usr/bin/chromium';
+}
+
 export function browserOptions(headless = true) {
-  const executablePath = process.env.CS_CHROMIUM_PATH || (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined);
-  return { headless, executablePath, viewport: { width: 1440, height: 1000 }, locale: 'ko-KR' };
+  return { headless, executablePath: browserExecutable(), viewport: { width: 1440, height: 1000 }, locale: 'ko-KR' };
 }
 export function safeUrl(value) {
   let url;

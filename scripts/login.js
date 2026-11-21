@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
 import { createInterface } from 'node:readline/promises';
-import { resolve, join } from 'node:path';
+import { resolve, join, basename } from 'node:path';
 import { readLoginChannel } from '../src/login-config.js';
 import { browserOptions, safeUrl, verifyChannelAccount } from '../src/connectors.js';
 import { CHANNELS } from '../src/domain.js';
@@ -20,7 +20,12 @@ if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND
   console.error('로그인에는 화면이 있는 환경이 필요합니다. 개인 PC에서 이 프로그램을 실행하고 npm run login -- ' + id + ' 명령을 실행하세요. 클라우드에는 개인 PC의 로그인 세션이 자동 공유되지 않습니다.');
   process.exit(1);
 }
-const context = await chromium.launchPersistentContext(join(dataDir, 'profiles', id), browserOptions(false));
+const options = browserOptions(false);
+if (process.platform === 'win32') {
+  const name = options.executablePath ? basename(options.executablePath) : 'Playwright Chromium';
+  console.log(`로그인 브라우저: ${name}`);
+}
+const context = await chromium.launchPersistentContext(join(dataDir, 'profiles', id), options);
 try {
   const page = await context.newPage(); await page.goto(safeUrl(url));
   const terminal = createInterface({ input: process.stdin, output: process.stdout });

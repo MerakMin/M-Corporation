@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readLoginChannel, readLoginSource } from '../src/login-config.js';
 import { openStore } from '../src/store.js';
+import { browserExecutable } from '../src/connectors.js';
 
 test('로그인 설정 조회가 실행 중인 답변 상태와 사용자 설정을 변경하지 않는다', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cs-login-'));
@@ -51,4 +52,14 @@ test('서버 재실행 전에도 새 고객문의 주소를 진단하며 DB를 �
     store.db.prepare('UPDATE channels SET config=? WHERE id=?').run(JSON.stringify(old), 'fashionplus');
     assert.equal(readLoginSource(dir, 'fashionplus', 'fashionplus-1').url, '');
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('Windows 로그인과 수집은 설치된 웨일을 선택하고 지정 경로를 우선한다', () => {
+  const env = { LOCALAPPDATA: 'C:/Users/Fixture/AppData/Local', ProgramFiles: 'C:/Program Files' };
+  const whale = win32.join(env.ProgramFiles, 'Naver', 'Naver Whale', 'Application', 'whale.exe');
+  const options = { platform: 'win32', env, fileExists: path => path === whale };
+  assert.equal(browserExecutable(options), whale);
+  assert.equal(browserExecutable({ ...options, fileExists: () => false }), undefined);
+  assert.equal(browserExecutable({ ...options, env: { ...env, CS_CHROMIUM_PATH: 'D:/Whale/whale.exe' } }), 'D:/Whale/whale.exe');
+  assert.equal(browserExecutable({ platform: 'linux', env: {}, fileExists: path => path === '/usr/bin/chromium' }), '/usr/bin/chromium');
 });
